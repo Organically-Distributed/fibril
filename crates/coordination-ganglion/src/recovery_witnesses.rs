@@ -408,8 +408,8 @@ mod tests {
         }
     }
     #[test]
-    fn stream_threshold_uses_its_all_assigned_copies_confirmation_contract() {
-        let (snapshot, request) = pending_for_kind(3, 1, crate::STREAM_NAMESPACE);
+    fn stream_threshold_uses_its_stamped_confirmation_contract() {
+        let (snapshot, request) = pending_for_kind(3, 3, crate::STREAM_NAMESPACE);
         assert_eq!(request.previous_write_nodes, 3);
         let mut set = RecoveryWitnessSet::new(&snapshot, &request).unwrap();
         assert!(set.command().stream);

@@ -358,6 +358,60 @@ mod tests {
     }
 
     #[test]
+    fn threshold_is_copies_minus_write_quorum_plus_one() {
+        use ReplicationDurabilityPolicy::*;
+        let followers = ["b", "c", "d", "e"];
+        for copies in 2..=5usize {
+            let f = &followers[..copies - 1];
+            for w in 1..=copies {
+                let a = stream("a", f, ReplicaDurable { nodes: w });
+                assert_eq!(
+                    seal_threshold(&a).unwrap(),
+                    copies - w + 1,
+                    "E={copies} W={w}"
+                );
+            }
+        }
+        // W = E: any single survivor is enough.
+        assert_eq!(
+            seal_threshold(&stream("a", &["b", "c"], ReplicaDurable { nodes: 3 })).unwrap(),
+            1
+        );
+        // Three copies on a majority: both survivors must answer.
+        assert_eq!(
+            seal_threshold(&stream("a", &["b", "c"], MajorityDurable)).unwrap(),
+            2
+        );
+        assert_eq!(
+            seal_threshold(&stream("a", &["b", "c", "d", "e"], MajorityDurable)).unwrap(),
+            3
+        );
+        // A policy count above the replica set means every copy.
+        assert_eq!(
+            seal_threshold(&stream("a", &["b"], ReplicaDurable { nodes: 3 })).unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn majority_waits_for_both_survivors_then_promotes_the_furthest() {
+        let majority = ReplicationDurabilityPolicy::MajorityDurable;
+        let previous = stream("a", &["b", "c"], majority);
+        let p = pending(previous.clone(), stream("b", &["c"], majority));
+        assert_eq!(p.required_old_witnesses, 2);
+        let error = recovery_assignment(&p, &[copy("b", 9, 1)]).unwrap_err();
+        assert!(error.contains("1 of 2"), "{error}");
+
+        let (assignment, start) =
+            recovery_assignment(&p, &[copy("b", 9, 1), copy("c", 11, 0)]).unwrap();
+        assert_eq!(assignment.owner, "c");
+        assert_eq!(assignment.followers, vec!["b"]);
+        assert_eq!(assignment.durability, majority);
+        assert_eq!(start.records, 11);
+        assert_eq!(crate::promotion::write_requirement(&assignment).unwrap(), 2);
+    }
+
+    #[test]
     fn history_starts_of_removed_streams_are_dropped() {
         let kept = stream("a", &[], ReplicationDurabilityPolicy::LocalDurable);
         let mut gone = kept.clone();

@@ -4,9 +4,7 @@
 //! history transfer and activation protocol can supply a recovery certificate.
 //! This prevents ordinary follower refresh from overwriting surviving evidence.
 
-use ganglion_core::{
-    CoordinationSnapshot, PartitionAssignment, ReplicationDurabilityPolicy, ResourceIdentity,
-};
+use ganglion_core::{CoordinationSnapshot, PartitionAssignment, ResourceIdentity};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -47,12 +45,13 @@ pub(crate) fn write_requirement(assignment: &PartitionAssignment) -> Result<usiz
     if assignment.followers.iter().any(|id| !nodes.insert(id)) {
         return Err("replica configuration contains duplicate identities".into());
     }
-    // Stream assignments use the local-policy field in Ganglion's projection;
-    // their broker confirmation rule requires every assigned durable copy.
-    let policy = if assignment.resource.namespace == super::STREAM_NAMESPACE
-        && !assignment.followers.is_empty()
-    {
-        ReplicationDurabilityPolicy::ReplicaDurable { nodes: nodes.len() }
+    // Streams confirm by the same rule the broker applies, so the recovery
+    // threshold derived from this matches their confirms.
+    let policy = if assignment.resource.namespace == super::STREAM_NAMESPACE {
+        super::to_ganglion_durability(fibril_broker::coordination::stream_confirm_policy(
+            super::to_fibril_durability(assignment.durability),
+            assignment.followers.len(),
+        ))
     } else {
         assignment.durability
     };
@@ -165,6 +164,27 @@ fn lost_followers_held(
         && previous.followers.len() - removed.len() + 1 >= write_nodes
 }
 
+/// Whether a stream change keeps every confirmed record findable without
+/// recovery: the owner stays, every follower stays, and no more copies than
+/// before are needed to confirm. A record confirmed on `W` old copies then
+/// meets any `E - W' + 1` new copies when `W' <= W`, so added copies may start
+/// empty and catch up. This covers placement adding a replacement follower
+/// and moving a stream onto a lower policy.
+fn stream_change_keeps_confirms(
+    previous: &PartitionAssignment,
+    proposed: &PartitionAssignment,
+    old_writes: usize,
+    new_writes: usize,
+) -> bool {
+    previous.resource.namespace == super::STREAM_NAMESPACE
+        && previous.owner == proposed.owner
+        && previous
+            .followers
+            .iter()
+            .all(|follower| proposed.followers.contains(follower))
+        && new_writes <= old_writes
+}
+
 /// Hold changes affecting a replicated confirmation contract and persist the
 /// original configuration beside the proposed replacement in the same CAS.
 /// Existing requests are immutable across controller retries and restarts.
@@ -241,6 +261,9 @@ pub(crate) fn retain_unproven_assignments(
             held += 1;
             continue;
         }
+        if !enrolled && stream_change_keeps_confirms(previous, proposed, old_writes, new_writes) {
+            continue;
+        }
         let replaced = if enrolled {
             crate::history_activation::replaced_initial_processes(committed, resource)?
         } else {
@@ -308,6 +331,7 @@ pub(crate) fn retain_unproven_assignments(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ganglion_core::ReplicationDurabilityPolicy;
 
     fn assignment(owner: &str, followers: &[&str]) -> PartitionAssignment {
         let mut a = PartitionAssignment::new(
@@ -514,6 +538,65 @@ mod tests {
     }
 
     #[test]
+    fn stream_followers_join_without_recovery_while_confirms_need_no_more_copies() {
+        let mut a = assignment("a", &["b"]);
+        a.resource.namespace = super::super::STREAM_NAMESPACE.into();
+        let old = snapshot(a.clone());
+        // A third copy on a majority still confirms on two.
+        let mut added = a.clone();
+        added.followers.push("c".into());
+        let mut desired = snapshot(added.clone());
+        assert_eq!(retain_unproven_assignments(&old, &mut desired, &|_| false).unwrap(), 0);
+        assert_eq!(desired.assignments, snapshot(added.clone()).assignments);
+
+        // Moving a stream stamped before streams had a policy, which needs
+        // every copy, onto a majority lowers W and needs no recovery.
+        let mut legacy = added.clone();
+        legacy.durability = ReplicationDurabilityPolicy::LocalDurable;
+        let mut desired = snapshot(added.clone());
+        let legacy = snapshot(legacy);
+        assert_eq!(
+            retain_unproven_assignments(&legacy, &mut desired, &|_| false).unwrap(),
+            0
+        );
+
+        // Raising W, replacing a follower or moving the owner still recovers.
+        for changed in [
+            {
+                let mut c = added.clone();
+                c.durability = ReplicationDurabilityPolicy::ReplicaDurable { nodes: 3 };
+                c
+            },
+            {
+                let mut c = a.clone();
+                c.followers = vec!["c".into()];
+                c
+            },
+            {
+                let mut c = a.clone();
+                c.owner = "b".into();
+                c.followers = vec!["a".into()];
+                c
+            },
+        ] {
+            let mut desired = snapshot(changed);
+            assert_eq!(retain_unproven_assignments(&old, &mut desired, &|_| false).unwrap(), 1);
+            assert_eq!(desired.assignments, old.assignments);
+        }
+        // The same addition on a queue still goes through recovery.
+        let queue = assignment("a", &["b"]);
+        let mut grown = assignment("a", &["b", "c"]);
+        grown.durability = queue.durability;
+        let mut desired = snapshot(grown);
+        let queue = snapshot(queue);
+        assert_eq!(
+            retain_unproven_assignments(&queue, &mut desired, &|_| false).unwrap(),
+            1
+        );
+        assert_eq!(desired.assignments, queue.assignments);
+    }
+
+    #[test]
     fn malformed_pending_request_never_unlocks_assignment() {
         let mut old = snapshot(assignment("a", &["b", "c"]));
         let key = pending_recovery_key(old.assignments.keys().next().unwrap());
@@ -652,6 +735,7 @@ pub(crate) fn validate_seal_command(
 #[cfg(test)]
 mod seal_tests {
     use super::*;
+    use ganglion_core::ReplicationDurabilityPolicy;
     fn pending() -> (CoordinationSnapshot, PendingRecovery) {
         let resource = ResourceIdentity::new(super::super::QUEUE_NAMESPACE, "q", 0, None);
         let mut old =

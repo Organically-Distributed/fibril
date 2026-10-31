@@ -129,6 +129,38 @@ impl PartitionAssignment {
     }
 }
 
+/// Confirm rule of a replicated durable stream with `follower_count`
+/// followers and the policy stamped on its assignment. Both the broker's
+/// confirm and the controller's recovery threshold use it, so they agree on
+/// `W`.
+///
+/// Streams have no owner-only replicated mode: `LocalDurable`, which is also
+/// what an assignment stamped before streams had a policy carries, requires
+/// every copy. A stream record is always durable on the copies it counts, so
+/// an accepted count is read as a durable one. A count above the replica set
+/// is capped at the whole set.
+pub fn stream_confirm_policy(
+    stamped: ReplicationDurabilityPolicy,
+    follower_count: usize,
+) -> ReplicationDurabilityPolicy {
+    let copies = 1 + follower_count;
+    match stamped {
+        _ if follower_count == 0 => ReplicationDurabilityPolicy::LocalDurable,
+        ReplicationDurabilityPolicy::LocalDurable => {
+            ReplicationDurabilityPolicy::ReplicaDurable { nodes: copies }
+        }
+        ReplicationDurabilityPolicy::ReplicaAccepted { nodes }
+        | ReplicationDurabilityPolicy::ReplicaDurable { nodes } => {
+            ReplicationDurabilityPolicy::ReplicaDurable {
+                nodes: nodes.clamp(1, copies),
+            }
+        }
+        ReplicationDurabilityPolicy::MajorityDurable => {
+            ReplicationDurabilityPolicy::MajorityDurable
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplicationDurabilityPolicy {
     /// Confirm after the local owner has durably written the append.
@@ -481,6 +513,9 @@ pub struct StreamAssignment {
     /// Where each failover's owner history starts, oldest first. A copy that
     /// followed an older owner cuts back to the first start it has not seen.
     pub epoch_starts: Arc<[StreamEpochStart]>,
+    /// Policy the controller stamped for a replicated stream. Read it through
+    /// [`stream_confirm_policy`], which also gives the recovery threshold.
+    pub durability: ReplicationDurabilityPolicy,
 }
 
 impl StreamAssignment {
@@ -497,7 +532,14 @@ impl StreamAssignment {
             epoch,
             history: None,
             epoch_starts: Arc::new([]),
+            durability: ReplicationDurabilityPolicy::LocalDurable,
         }
+    }
+
+    /// How many durable copies confirm a record of this stream, owner
+    /// included, if its tier replicates.
+    pub fn confirm_policy(&self) -> ReplicationDurabilityPolicy {
+        stream_confirm_policy(self.durability, self.followers.len())
     }
 
     pub fn is_owned_by(&self, node_id: &str) -> bool {
@@ -1898,6 +1940,34 @@ pub mod contract_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stream_confirm_policy_follows_the_stamp_with_every_copy_as_fallback() {
+        use ReplicationDurabilityPolicy::*;
+        assert_eq!(stream_confirm_policy(MajorityDurable, 0), LocalDurable);
+        assert_eq!(
+            stream_confirm_policy(LocalDurable, 2),
+            ReplicaDurable { nodes: 3 }
+        );
+        assert_eq!(stream_confirm_policy(MajorityDurable, 2), MajorityDurable);
+        assert_eq!(
+            stream_confirm_policy(ReplicaAccepted { nodes: 2 }, 2),
+            ReplicaDurable { nodes: 2 }
+        );
+        assert_eq!(
+            stream_confirm_policy(ReplicaDurable { nodes: 5 }, 1),
+            ReplicaDurable { nodes: 2 }
+        );
+        let mut assignment = StreamAssignment::new(
+            StreamIdentity::new("s", Partition::new(0)),
+            "a",
+            vec!["b".into(), "c".into()],
+            1,
+        );
+        assert_eq!(assignment.confirm_policy(), ReplicaDurable { nodes: 3 });
+        assignment.durability = MajorityDurable;
+        assert_eq!(assignment.confirm_policy().resolve(3).unwrap().nodes, 2);
+    }
 
     fn snapshot() -> CoordinationSnapshot {
         let mut nodes = HashMap::new();

@@ -5870,24 +5870,21 @@ impl Broker<StromaEngine> {
     }
 
     /// The replication confirm policy for a stream partition. Only the durable
-    /// tier with replicas waits on replication; the express tiers and any
-    /// owner-only (no-follower) stream confirm on the local durable write. The
-    /// per-stream replication-factor / majority override is a later brick (73e);
-    /// today a replicated durable stream requires all assigned replicas durable.
+    /// tier with replicas waits on replication, by the policy stamped on its
+    /// assignment. The express tiers and any owner-only (no-follower) stream
+    /// confirm on the local durable write.
     fn stream_durability_policy(
         &self,
         topic: &str,
-        follower_count: usize,
+        assignment: &crate::coordination::StreamAssignment,
     ) -> ReplicationDurabilityPolicy {
         let durable = self
             .stream_ownership
             .stream_open_config(topic)
             .map(|cfg| cfg.durability == StreamDurability::Durable)
             .unwrap_or(false);
-        if durable && follower_count > 0 {
-            ReplicationDurabilityPolicy::ReplicaDurable {
-                nodes: 1 + follower_count,
-            }
+        if durable {
+            assignment.confirm_policy()
         } else {
             ReplicationDurabilityPolicy::LocalDurable
         }
@@ -5991,7 +5988,7 @@ impl Broker<StromaEngine> {
         // replica durability, mirroring the queue apply.
         match &transition.next {
             Some(next) => {
-                let durability = self.stream_durability_policy(&topic, next.followers.len());
+                let durability = self.stream_durability_policy(&topic, next);
                 let mut assignment = PartitionAssignment::new(
                     identity.clone(),
                     next.owner.clone(),

@@ -950,12 +950,13 @@ pub fn to_ganglion_snapshot(
     // the local keratin tier, not cross-node replication.
     for (stream, assignment) in &snapshot.stream_assignments {
         let resource = to_ganglion_stream_resource(stream);
-        let mapped = ganglion_core::PartitionAssignment::new(
+        let mut mapped = ganglion_core::PartitionAssignment::new(
             resource.clone(),
             assignment.owner.clone(),
             assignment.followers.clone(),
             assignment.epoch,
         );
+        mapped.durability = to_ganglion_durability(assignment.durability);
         assignments.insert(resource, mapped);
     }
 
@@ -1055,6 +1056,7 @@ fn project_snapshot(
                 assignment.epoch,
             );
             mapped.history = history;
+            mapped.durability = to_fibril_durability(assignment.durability);
             // Without its history starts a rejoining copy could keep entries
             // the new owner replaced, so an unreadable record withholds the
             // assignment.
@@ -3673,6 +3675,15 @@ impl GanglionCoordination {
                 })
                 .map_err(ControlError::Planning)?
                 .assignments;
+            // A replicated durable stream confirms by the cluster assignment
+            // policy, like a queue. Brokers and recovery read it from here.
+            for assignment in plan.snapshot.stream_assignments.values_mut() {
+                assignment.durability = if assignment.followers.is_empty() {
+                    ReplicationDurabilityPolicy::LocalDurable
+                } else {
+                    default_durability
+                };
+            }
 
             let mut desired = to_ganglion_snapshot(&plan.snapshot);
 

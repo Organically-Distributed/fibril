@@ -1170,12 +1170,13 @@ mod tests {
         let mut wrong = decision.clone();
         wrong.binding.writer_session = [3; 16];
         assert_ne!(decision.digest().unwrap(), wrong.digest().unwrap());
+        // A stream confirms by its stamped policy, a majority of three here.
         let (stream, resource) = fixture(true);
         assert_eq!(
             proposed_decision(&stream, &resource, "a", [2; 16])
                 .unwrap()
                 .required_write_nodes,
-            3
+            2
         );
     }
 
