@@ -653,6 +653,18 @@ async fn run_cursor_committer(
                 }
             }
         }
+        // Commits are written without a per-commit fsync. A flush promises
+        // durable cursors, which shutdown relies on, so sync them first.
+        if !acks.is_empty() && outcome.is_ok() {
+            if let Err(err) = engine.sync_stream_cursor_events(&tp, part).await {
+                tracing::warn!(
+                    topic = %tp,
+                    partition = part,
+                    "stream cursor sync on flush failed: {err}"
+                );
+                outcome = Err(err.to_string());
+            }
+        }
         // Acknowledge flush waiters only after the commit finished, with its
         // result, so teardown learns when cursors did not persist.
         for ack in acks {
@@ -1671,6 +1683,9 @@ mod channel_tests {
         }
         async fn sync_stream(&self, tp: &str, part: u32) -> Result<(), StromaError> {
             self.inner.sync_stream(tp, part).await
+        }
+        async fn sync_stream_cursor_events(&self, tp: &str, part: u32) -> Result<(), StromaError> {
+            self.inner.sync_stream_cursor_events(tp, part).await
         }
         async fn read_stream_records(
             &self,

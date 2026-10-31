@@ -555,6 +555,9 @@ pub trait StreamStore: Send + Sync {
     /// the writer never hits the kernel writeback cliff.
     async fn sync_stream(&self, tp: &str, part: u32) -> Result<(), StromaError>;
 
+    /// Make written cursor commits durable now.
+    async fn sync_stream_cursor_events(&self, tp: &str, part: u32) -> Result<(), StromaError>;
+
     async fn read_stream_records(
         &self,
         tp: &str,
@@ -685,6 +688,10 @@ impl StreamStore for StromaEngine {
 
     async fn sync_stream(&self, tp: &str, part: u32) -> Result<(), StromaError> {
         self.inner.sync_stream(tp, part).await
+    }
+
+    async fn sync_stream_cursor_events(&self, tp: &str, part: u32) -> Result<(), StromaError> {
+        self.inner.sync_stream_cursor_events(tp, part).await
     }
 
     async fn read_stream_records(

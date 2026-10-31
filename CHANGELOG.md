@@ -1023,6 +1023,11 @@ versions may still change the API and wire protocol. 1.0 commits to stability.
 
 ### Fixed
 
+- Flushing a stream's cursor commits syncs them again before it returns.
+  Cursor commits are written without a per-commit fsync, so a flush, which
+  shutdown relies on, only wrote them and a power cut right after could lose
+  cursor advances the flush had reported as persisted.
+
 - A stream follower worker started reading at offset zero, so a restarted
   copy that already held records stalled as soon as an owner batch crossed its
   end, asking for a checkpoint streams cannot install. It now starts at the
