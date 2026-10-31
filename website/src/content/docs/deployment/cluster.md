@@ -191,15 +191,20 @@ good delays owner failover by up to that grace after each leader change. Set
 the grace to `0` to turn this off. Every owner restarts in that case, so
 replicated queues go through recovery instead of the follower rejoin below.
 
-When a single node restarts, partitions it owns go through recovery. Queues it
+When a single node restarts, partitions it owns go through recovery. A
+replicated durable stream fails over without an operator: the controller seals
+the surviving copies and promotes the one holding every confirmed record, and
+the old owner rejoins as a follower once it is back. See
+[stream failover](/reliability/failure-modes/#stream-failover). Queues it
 only follows keep serving if their write requirement W is 2 or more. The
 restarted follower rejoins as a learner and counts toward confirms again once it
 is re-admitted. At most W-1 followers of a queue rejoin at once, so in a rolling
 restart let one node's followers rejoin before restarting the next. See
 [restarted queue followers](/reliability/recovery-sealing/#restarted-queue-followers).
 
-A partition whose only full copy is on a missing owner (owner-only durable
-streams, and legacy single-copy queues) waits for that owner instead of moving.
+A partition whose only full copy is on a missing owner (owner-only durable and
+speculative streams, and legacy single-copy queues) waits for that owner instead
+of moving.
 The topology output lists such holds, and pending recoveries that automatic
 recovery will not finish, under `consensus.controller.attention`. Two guarded
 commands resolve them:

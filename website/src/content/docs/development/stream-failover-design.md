@@ -1,70 +1,112 @@
 ---
 title: Stream failover
-description: Design for automatic failover of replicated Plexus streams by sealing surviving replicas and promoting the furthest, which also lets durable streams confirm on a majority.
+description: How a replicated Plexus stream fails over by sealing surviving copies and promoting the furthest, and why that lets durable streams confirm on a majority.
 ---
 
-This is a proposed design. Today a replicated durable stream that loses its
-owner waits for an operator: the controller records a pending recovery, the
-recovery driver refuses streams, and the stream shows up under controller
-attention. Durable streams also confirm only once every copy holds a record,
-which is what makes promoting any follower safe today.
-
-## Goals
-
-- Fail over a replicated durable stream automatically when its owner is lost,
-  without losing any confirmed record.
-- Let durable streams confirm on a majority of copies, like queues, so one
-  slow or lost follower does not stall confirms.
-- Reuse the existing seal operation and pending recovery bookkeeping.
+A replicated durable stream that loses its owner fails over without an
+operator. The recovery worker on the coordination leader seals the surviving
+copies, promotes the one with the furthest record tail and commits the new
+assignment. Durable streams confirm by the cluster assignment policy,
+`majority_durable` by default, instead of waiting for every copy.
 
 Out of scope: learner rejoin and the follower loss hold for streams, recovery
-of the express tiers, and verifying stream contents byte for byte. Streams
-have no queue state to rebuild, so the record log tail is the evidence that
-matters.
+of the express tiers, and verifying stream contents byte for byte. Streams have
+no queue state to rebuild, so the record log tail is the evidence that matters.
 
 ## Safety argument
 
 A stream assignment has `E` copies and confirms a record once `W` of them hold
-it durably, the owner included. Recovery seals `R = E - W + 1` copies. Any set
-of `W` copies and any set of `R` copies share at least one copy, since
-`W + R = E + 1`. So among any `R` sealed copies, at least one holds every
-confirmed record, and the copy with the furthest durable record tail holds
-them all, because each copy's log is a prefix of the old owner's log.
+it durably, the owner included. Recovery seals at least `R = E - W + 1` copies.
+Any set of `W` copies and any set of `R` copies share at least one copy, since
+`W + R = E + 1`. So among the sealed copies at least one holds every confirmed
+record, and the copy with the furthest durable record tail holds them all,
+because each copy's log is a prefix of the old owner's log.
 
-Sealing fences each copy at a new epoch first, so its tail cannot grow from
+Sealing fences each copy at the next epoch first, so its tail cannot grow from
 the old owner while the controller decides. The promoted copy becomes owner at
-its own tail, exactly as `PromoteFollowerToOwner` does today.
+its own tail.
 
-With `W = E`, which is today's every-copy policy, `R = 1` and any surviving
-copy can be promoted. With 3 copies and `W = 2`, `R = 2` and both surviving
-followers must answer before failover proceeds. If they cannot, the stream
-waits, as a queue does, instead of guessing.
+With `W = E` (every copy) `R = 1` and any surviving copy can be promoted. With
+3 copies and `W = 2`, `R = 2` and both surviving followers must answer. If they
+cannot, the stream waits, as a queue does, instead of guessing.
+
+## One rule for W
+
+`stream_confirm_policy` in the broker's coordination module turns the policy
+stamped on a stream assignment into the stream's confirm rule. The broker
+confirms by it, and the controller's write requirement, from which the pending
+recovery and the seal threshold take `R`, uses the same function. The two
+cannot disagree.
+
+The controller stamps the cluster assignment policy on every replicated stream
+assignment. `local_durable`, which is also what an assignment carries if it was
+placed before streams had a policy, means every copy, since a replicated stream
+has no owner-only mode. A count above the replica set is capped at the whole
+set, and an accepted count is read as a durable one.
 
 ## Flow
 
-1. The owner is lost, through liveness expiry or eager failover. The controller
-   proposes a new owner as today and, because the stream is replicated,
-   records a pending recovery instead of moving at once.
-2. The recovery driver, which already runs on the controller, sends a stream
-   seal at the next epoch to every surviving copy of the old assignment and
-   collects replies until it has `R` of them.
-3. It picks the copy with the highest durable record tail. Ties go to the
-   highest cursor event tail, then to the lowest node id, so the choice is
-   deterministic.
-4. It commits the new assignment with that copy as owner at the next epoch,
-   the other sealed copies as followers, and clears the pending recovery.
-   Placement adds a replacement copy later, as for any lost follower.
-5. The new owner serves from its tail. Followers catch up from it as usual.
+1. The owner is lost, through liveness expiry or eager failover. The
+   controller proposes a new owner as before and, because the stream is
+   replicated, records a pending recovery instead of moving at once.
+2. The recovery worker on the coordination leader sends a stream seal at the
+   next epoch to every copy of the old assignment at once. Sealing more than
+   `R` copies only adds followers, and the furthest of a larger set is still
+   correct. Copies that fail to answer in time are left out.
+3. With at least `R` answers it picks the copy with the highest record tail.
+   Ties go to the highest cursor event tail, then to the lowest node id, so the
+   choice is deterministic.
+4. One guarded consensus write commits the new assignment, clears the pending
+   recovery and appends where the new owner's history starts (its record and
+   cursor event tails at the new epoch) to the stream's history starts. The
+   owner is the chosen copy, the other sealed copies follow it, and members the
+   proposal added that held no copy join as followers too.
+5. Each broker applies the new assignment. A sealed copy that the assignment
+   includes releases its seal and continues, the new owner promoting at its own
+   tails. Copies left out stay sealed until a later assignment includes them.
+
+A stream change that keeps the owner and every follower and needs no more
+copies to confirm commits without recovery. A record confirmed on `W` old copies
+meets any `E' - W' + 1` new copies when `W' <= W`, so new copies may start empty
+and catch up. That covers placement adding a replacement follower after a
+failover, and moving a stream from every copy to a majority.
 
 ## Copies with a longer tail
 
 A copy that was not sealed, typically the old owner coming back, can hold
-records past the new owner's tail. None of them was confirmed, since a
-confirmed record is on the promoted copy. When such a copy rejoins under the
-new epoch, it truncates its record log to the new owner's tail at that epoch
-before catching up, instead of failing on the conflicting offsets. The cursor
-event log is truncated the same way. Cursor positions above the new tail are
-clamped to it, so a returning reader resumes from a valid offset.
+records past the new owner's start. None of them was confirmed, since a
+confirmed record is on the promoted copy. Before any role change at a new
+epoch, a broker asks storage to bring the copy onto the history of that epoch:
+
+- The copy's own log epochs say which owner history it followed. A sealed copy
+  uses the epochs its seal replaced, since the seal advanced them without new
+  data.
+- The cut is the lowest history start recorded for an epoch after the copy's
+  own and up to the target epoch. Both the record log and the cursor event log
+  are cut there. A copy already on the target history is left alone, so a
+  follower that caught up past the start never loses confirmed records.
+- A stream snapshot covering cursor events past the cut keeps its state but has
+  its boundary lowered, so the new owner's events at those offsets replay.
+- On the next open the stream tail comes down to the record log end and any
+  cursor above it is clamped to it, so a returning reader resumes from a valid
+  offset.
+
+The cut never goes below the retained head and never touches entries at or
+below the start. Repeating it is harmless, since the copy's epochs only move
+once the role change after it advances them. A fresh follower worker resumes at
+the copy's own tails, which the cut has made a prefix of the owner's log.
+
+History starts of a stream that no longer has an assignment are dropped, so a
+recreated stream does not inherit them. An unreadable list withholds the
+assignment rather than letting a copy follow without it.
+
+## Seals
+
+A stream seal only fences and reports tails. Nothing is installed from it, so,
+unlike a queue seal, it is released in place once the new assignment includes
+the copy at or after the fence epoch. A newer transition at the same fence
+epoch takes over an existing stream seal, which happens when an operator
+withdraws a stream recovery and the controller records a new one.
 
 ## Cursors
 
@@ -73,29 +115,31 @@ cursor events reach followers only once durable on the owner and are written
 without a per-commit fsync. A reader resuming from such a cursor receives some
 records again, which at-least-once allows.
 
-## Majority confirms
+## Known limits
 
-Once failover seals as above, durable streams use the cluster's assignment
-durability policy, `majority_durable` by default, instead of requiring every
-copy. The stream delivery gate and the producer confirm already wait on the
-assignment's requirement, so they follow automatically.
+- Right after a failover the new owner may be the only copy holding records
+  confirmed under the old assignment until its followers catch up. Losing it in
+  that window is a second failure, beyond what the policy promises, but the
+  next recovery would then promote the furthest remaining copy instead of
+  waiting.
+- A copy whose broker did not apply its last role change before being sealed
+  reports a raw tail that can include an older owner's unconfirmed suffix.
+- Sealing reads the whole retained log to compute its digest, and a broker
+  takes one recovery seal at a time, so many large streams failing over from
+  one node recover one after another.
+- Accepting owner loss moves a stream without recording a history start, so a
+  returning old owner is not cut back on that path.
 
 ## Tests
 
 - Unit: the seal threshold for `E` and `W` combinations, the choice of the
-  furthest copy and its tie-break, and waiting when fewer than `R` copies
-  answer.
-- Broker: a returning copy with a longer unconfirmed suffix truncates to the
-  new owner's tail and catches up, with cursors clamped.
-- Cluster: kill the owner of a replicated durable stream under confirmed load
-  with 3 copies and `majority_durable`. Every confirmed record is delivered
-  after failover, no record is delivered twice at different offsets, and the
-  stream serves again without an operator.
-
-## Order of work
-
-1. Stream seals and the furthest-copy choice in the recovery driver, with the
-   pending recovery cleared on commit.
-2. Truncation on rejoin for copies with a longer tail.
-3. The majority policy for durable streams.
-4. A stream owner kill case in the cluster bench.
+  furthest copy and its tie-break, waiting when fewer than `R` copies answer,
+  queue changes still recovering where stream follower additions do not.
+- Storage and broker: a returning copy with a longer suffix cuts to the new
+  start with cursors clamped and takes the new owner's entries, and a sealed
+  copy is released and promoted.
+- Cluster: kill the owner of a replicated durable stream with 3 copies on
+  `majority_durable`. Every confirmed record is delivered at one offset each,
+  the stream serves again without an operator, and the old owner rejoins as a
+  follower without another recovery. The cluster bench has a stream owner kill
+  case (`--stream durable --kill-owner-at-secs`).

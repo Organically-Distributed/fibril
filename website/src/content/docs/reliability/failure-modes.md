@@ -35,7 +35,7 @@ Two distinct failures matter, and they are not the same:
 | Queue, single owner (`local_durable`) | Yes (fsync per durable write) | No | The partition is unavailable while the node is down. The only mode for a standalone broker. |
 | Queue, replicated (`replica_durable` / `majority_durable`) | Yes | Copies survive. Failover waits for recovery proof | `majority_durable` is the cluster default. Confirmation waits for the required replicas. The controller retains the old assignment while a pending recovery request awaits confirmed-history proof, and enrolled queues then recover automatically. Requires Ganglion coordination and assigned followers. A restarted follower of a queue with W >= 2 rejoins as a learner without a recovery fence. |
 | Stream, `durable` owner-only | Yes (fsync before deliver/confirm) | No | Survives restart, not node loss. Records and cursors are on the one owner, so the partition waits for that owner to return. |
-| Stream, `durable` replicated (`stream_replication_factor` >= 2) | Yes | Copies survive. Automatic failover paused | Record and cursor logs replicate. Replicated ownership changes share the pending-recovery barrier of queues, but automatic recovery does not resolve a stream request. See [operator decisions](#a-recovery-or-held-owner-needs-an-operator). |
+| Stream, `durable` replicated (`stream_replication_factor` >= 1) | Yes | Copies survive. Fails over automatically | Record and cursor logs replicate. A record confirms once the cluster assignment policy is met (`majority_durable` by default, so 2 of 3 copies). When the owner is lost, the controller seals enough surviving copies to hold every confirmed record and promotes the furthest one. See [stream failover](#stream-failover). |
 | Stream, `speculative` | Partial | No | Delivers off the staged offset and defers the producer confirm until durable, so a confirmed record is durable, but unconfirmed records in flight at a crash can be lost. An owner-only partition waits for its owner to return. |
 | Stream, `ephemeral` | Partial | No | Lowest latency, `AfterWrite` (no per-record fsync). Recent records can be lost on a crash. Intended for where freshness beats durability. Makes no durability promise, so the controller can move it to another node when the owner stops heartbeating. |
 
@@ -150,6 +150,30 @@ Normal placement adds followers later. When too few copy holders survive, a fres
 node still joins, because recovery never lowers the write requirement on liveness
 alone.
 
+### Stream failover
+
+A replicated durable stream with `E` copies confirms a record once `W` of them
+hold it, the owner included. `W` comes from the cluster assignment policy:
+`majority_durable` (the default) is 2 of 3 copies. A stream placed before
+streams followed that policy, or a cluster on `local_durable`, needs every
+copy.
+
+When the owner is lost, the controller records a pending recovery and the
+recovery worker on the coordination leader seals the surviving copies at the
+next epoch. It needs `E - W + 1` of them, 2 for 3 copies on a majority, so at
+least one sealed copy holds every confirmed record. It promotes the copy with
+the furthest record tail (then cursor event tail, then the smallest node id),
+keeps the other sealed copies as followers and commits the new assignment
+without an operator. When too few copies answer, the stream waits and the
+worker retries, like a queue.
+
+A copy that comes back later, typically the old owner, may hold records past
+the new owner's start. None of them was confirmed. It drops them before it
+follows again, together with any cursor events past the new start, and its
+cursors are pulled back to its new tail. A reader may receive some records
+again after a failover, since cursor commits reach followers once they are
+durable on the owner.
+
 ### Whole-cluster restart
 
 A newly elected controller waits before moving any owner. Until every
@@ -172,8 +196,8 @@ entry names the resource, the reason and the suggested action. Two cases appear
 there:
 
 - **A pending recovery automatic recovery will not finish.** The recovery worker
-  only recovers queues with an accepted history. A pending recovery for a stream
-  or a legacy queue stays until an operator withdraws it.
+  recovers replicated streams and queues with an accepted history. A pending
+  recovery for a legacy queue stays until an operator withdraws it.
 - **A resource held on a missing owner.** See the hold described above.
 
 Two operator commands resolve these. Both need Ganglion coordination and
@@ -200,8 +224,9 @@ without it.
   replicas may already be sealed for that request, or
 - recovery already recorded a plan.
 
-Use it for a stream once its owner serves again, or as the first step before
-accepting owner loss.
+Use it as the first step before accepting owner loss, for example for a
+stream that cannot reach enough copies. Copies the stream recovery already
+sealed stay fenced until a later assignment includes them.
 
 **Accept owner loss** gives up every write that only the missing owner stored,
 including confirmed ones. It is refused when:

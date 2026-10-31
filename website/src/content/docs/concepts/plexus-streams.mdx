@@ -144,11 +144,15 @@ precise about which you have:
   is lost the records are gone.
 - **Durable and replicated** (the durable tier with a replication factor of one or
   more) survives node loss: the owner replicates its record and cursor logs to that
-  many followers, a durable publish confirms only once the replicas have it, and a
-  caught-up follower is promoted on failover. A caught-up follower picks up new
-  durable records and cursor commits as soon as the owner has them, so these
-  confirms do not wait out a poll interval. This is the high-availability
-  configuration.
+  many followers, and a durable publish confirms once the cluster assignment
+  policy is met. With the default `majority_durable` that is both copies for a
+  replication factor of one and any two of three for a factor of two. When the
+  owner is lost, the controller seals enough surviving copies to be sure one holds
+  every confirmed record, promotes the furthest of them and keeps serving without
+  an operator. See [stream failover](/reliability/failure-modes/#stream-failover).
+  A caught-up follower picks up new durable records and cursor commits as soon as
+  the owner has them, so these confirms do not wait out a poll interval. This is
+  the high-availability configuration.
 
 Replication is the durable tier only. The express tiers (speculative, ephemeral)
 are always owner-only — replication would contradict their latency-first intent.

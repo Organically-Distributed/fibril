@@ -139,6 +139,21 @@ versions may still change the API and wire protocol. 1.0 commits to stability.
 
 ### Added
 
+- Replicated durable streams fail over without an operator. When a stream's
+  owner is lost, the recovery worker on the coordination leader seals the
+  surviving copies at the next epoch, needs `E - W + 1` of them, promotes the
+  one with the furthest record tail and commits the new assignment with the
+  other sealed copies as followers. A copy that comes back with records past
+  the new owner's start, typically the old owner, drops them and any cursor
+  events past it before following again, and its cursors are pulled back to
+  its new tail. Stream pending recoveries no longer show under controller
+  attention. Withdraw and accept-owner-loss still work for streams.
+
+- The cluster bench can kill a stream's owner mid-run
+  (`--stream durable --kill-owner-at-secs`) and checks that every confirmed
+  record reached every reader and no offset carried two records.
+  `bench-stream --verify-out` writes the ids it needs.
+
 - `storage.loaded_fsync_spacing_ms`, a runtime setting with a default of 2 ms.
   While a log's fsync is still running, the next one waits at least this long
   after the previous start. Light traffic syncs at once as before. At 1k msg/s
@@ -632,6 +647,16 @@ versions may still change the API and wire protocol. 1.0 commits to stability.
 
 ### Changed
 
+- Replicated durable streams confirm by the cluster assignment durability
+  policy, `majority_durable` by default, instead of waiting for every copy. A
+  stream with two followers then confirms on any two of its three copies. The
+  broker's confirm and the controller's recovery threshold use one rule, so
+  they agree on how many copies count. A cluster on `local_durable` keeps
+  replicated streams on every copy. Moving existing streams onto the policy
+  needs no recovery, and neither does placement adding a follower while the
+  owner stays and no more copies are needed to confirm. The admin topology
+  shows each stream assignment's confirm policy.
+
 - Stream cursor commits no longer wait for an fsync each. The owner writes
   them to the operating system and the cursor log's background sync, about
   every 100 ms, makes them durable. Followers write replicated cursor commits
@@ -994,6 +1019,11 @@ versions may still change the API and wire protocol. 1.0 commits to stability.
   unchanged, matching their own language norms.
 
 ### Fixed
+
+- A stream follower worker started reading at offset zero, so a restarted
+  copy that already held records stalled as soon as an owner batch crossed its
+  end, asking for a checkpoint streams cannot install. It now starts at the
+  copy's own tails.
 
 - A pull replication follower that stops a pass at its read limit reads again
   at once instead of waiting the 100 ms failure retry delay. Replicated durable
