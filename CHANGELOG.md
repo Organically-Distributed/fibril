@@ -146,8 +146,11 @@ versions may still change the API and wire protocol. 1.0 commits to stability.
   other sealed copies as followers. A copy that comes back with records past
   the new owner's start, typically the old owner, drops them and any cursor
   events past it before following again, and its cursors are pulled back to
-  its new tail. Stream pending recoveries no longer show under controller
-  attention. Withdraw and accept-owner-loss still work for streams.
+  its new tail. A recovery never promotes a copy below the record tail
+  recorded at the previous failover, which holds every record confirmed
+  before it, and waits under controller attention instead. Withdraw and
+  accept-owner-loss still work for streams, and accepting owner loss records
+  the new owner's published tails so a returning copy is cut back there too.
 
 - The cluster bench can kill a stream's owner mid-run
   (`--stream durable --kill-owner-at-secs`) and checks that every confirmed

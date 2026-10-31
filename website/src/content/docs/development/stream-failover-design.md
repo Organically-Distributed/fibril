@@ -55,7 +55,9 @@ set, and an accepted count is read as a durable one.
    correct. Copies that fail to answer in time are left out.
 3. With at least `R` answers it picks the copy with the highest record tail.
    Ties go to the highest cursor event tail, then to the lowest node id, so the
-   choice is deterministic.
+   choice is deterministic. If that copy's record tail is below the latest
+   recorded history start (see below), it waits instead, as it does with fewer
+   than `R` answers.
 4. One guarded consensus write commits the new assignment, clears the pending
    recovery and appends where the new owner's history starts (its record and
    cursor event tails at the new epoch) to the stream's history starts. The
@@ -70,6 +72,22 @@ copies to confirm commits without recovery. A record confirmed on `W` old copies
 meets any `E' - W' + 1` new copies when `W' <= W`, so new copies may start empty
 and catch up. That covers placement adding a replacement follower after a
 failover, and moving a stream from every copy to a majority.
+
+## The confirmed prefix
+
+The intersection argument covers records confirmed under the previous
+assignment. Records confirmed before it lie below the latest recorded history
+start, the promoted copy's record tail when it took over, and right after a
+failover that copy may be the only one holding them until its followers catch
+up. So recovery never promotes a copy whose record tail is below that start.
+It waits for a copy at or past it, reads the starts from the same snapshot its
+guarded commit checks, and the controller lists the wait under attention with
+the start's record count and the node that took over there. Attention judges
+from the tails copies publish in their heartbeats, so it stays quiet while a
+live copy has published nothing.
+
+With this check every promoted tail is at least the previous start, so the
+recorded starts only grow.
 
 ## Copies with a longer tail
 
@@ -119,22 +137,32 @@ records again, which at-least-once allows.
 
 - Right after a failover the new owner may be the only copy holding records
   confirmed under the old assignment until its followers catch up. Losing it in
-  that window is a second failure, beyond what the policy promises, but the
-  next recovery would then promote the furthest remaining copy instead of
-  waiting.
+  that window is a second failure, beyond what the policy promises. The next
+  recovery then waits for a copy that holds the confirmed prefix, usually that
+  owner coming back, and shows under controller attention until one answers or
+  an operator accepts the loss.
 - A copy whose broker did not apply its last role change before being sealed
   reports a raw tail that can include an older owner's unconfirmed suffix.
 - Sealing reads the whole retained log to compute its digest, and a broker
   takes one recovery seal at a time, so many large streams failing over from
   one node recover one after another.
-- Accepting owner loss moves a stream without recording a history start, so a
-  returning old owner is not cut back on that path.
+- Accepting owner loss moves a stream without sealing anything, so the start
+  recorded for that epoch is the new owner's tails as it last published them
+  in its heartbeat. They can only lag its log, so a returning copy may cut
+  lower than needed and fetch shared records again, and the owner of an epoch
+  is never cut at its own start. If the new owner published nothing, no start
+  is recorded and a returning copy is not cut back. Such a promotion can also
+  land below the confirmed prefix, which the operator accepted, and the broker
+  logs a warning.
 
 ## Tests
 
 - Unit: the seal threshold for `E` and `W` combinations, the choice of the
   furthest copy and its tie-break, waiting when fewer than `R` copies answer,
-  queue changes still recovering where stream follower additions do not.
+  a second owner loss waiting for the confirmed prefix and promoting once a
+  copy at the start answers, the matching attention entry, the start recorded
+  on an accepted owner loss, and queue changes still recovering where stream
+  follower additions do not.
 - Storage and broker: a returning copy with a longer suffix cuts to the new
   start with cursors clamped and takes the new owner's entries, and a sealed
   copy is released and promoted.

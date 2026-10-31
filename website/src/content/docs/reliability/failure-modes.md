@@ -165,7 +165,11 @@ least one sealed copy holds every confirmed record. It promotes the copy with
 the furthest record tail (then cursor event tail, then the smallest node id),
 keeps the other sealed copies as followers and commits the new assignment
 without an operator. When too few copies answer, the stream waits and the
-worker retries, like a queue.
+worker retries, like a queue. It also waits when even the furthest copy lacks
+records confirmed before the last failover, which can happen if the owner
+promoted then is lost before its followers caught up. The controller lists
+that wait under attention with the node that holds those records, and an
+operator can bring it back or withdraw the recovery and accept the loss.
 
 A copy that comes back later, typically the old owner, may hold records past
 the new owner's start. None of them was confirmed. It drops them before it
