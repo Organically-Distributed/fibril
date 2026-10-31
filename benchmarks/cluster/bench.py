@@ -225,6 +225,9 @@ def run(args):
             leader = top["consensus"].get("leader")
             owners = {a["topic"]: int(a["owner"].split("-")[1]) - 1
                       for a in top["coordination"]["assignments"] if a["topic"] in queues}
+            if args.stream:
+                owners.update({a["topic"]: int(a["owner"].split("-")[1]) - 1
+                               for a in top["coordination"]["stream_assignments"] if a["topic"] == "stream1"})
             return (leader - 1 if leader else None), owners
         raise RuntimeError("no broker answered a topology request")
 
@@ -238,7 +241,7 @@ def run(args):
                 raise RuntimeError("every measured queue is owned by the controller, add queues")
             target = candidates[0]
         else:
-            target = owners[queues[0]]
+            target = owners["stream1" if args.stream else queues[0]]
         if target is None:
             raise RuntimeError("no controller known")
         return target, {"controller": target == controller,
@@ -279,7 +282,10 @@ def run(args):
             if args.preallocate_bytes is not None:
                 node_env["FIBRIL_KERATIN_SEGMENT_PREALLOCATE_BYTES"] = str(args.preallocate_bytes)
             config = case / f"node-{i}.toml"
-            config.write_text(("[coordination.ganglion]\ntarget_followers = 2\n\n" if copies == 3 else "") + seed_toml(args))
+            ganglion = "[coordination.ganglion]\ntarget_followers = 2\n"
+            if args.stream_followers is not None:
+                ganglion += f"stream_replication_factor = {args.stream_followers}\n"
+            config.write_text((ganglion + "\n" if copies == 3 else "") + seed_toml(args))
             pin = ["taskset", "-c", cpusets[i]] if i < len(cpusets) and cpusets[i] else []
             command = pin + [str(args.bin_dir / "fibril-server"), "--data-dir", str(node_data[i] / "data"),
                              "--broker-bind", f"127.0.0.1:{broker_port(i)}",
@@ -364,8 +370,26 @@ def run(args):
                     ["perf", "record", *mode, "-o", str(case / f"perf-node-{n}.data"), "-p", str(servers[n].pid)],
                     stdout=subprocess.DEVNULL, stderr=(case / f"perf-node-{n}.err").open("w"), preexec_fn=raise_fds))
 
+        stream_port = broker_port(0)
+        if args.stream and args.kill_owner_at_secs is not None:
+            # Declare first so the clients can use a broker that survives the
+            # kill as their bootstrap.
+            http(endpoints[0], "/admin/api/streams", {"topic": "stream1", "partition_count": 1,
+                                                       "durability": args.stream}, timeout=10)
+
+            def stream_placed():
+                top = http(endpoints[0], "/admin/api/topology")
+                found = [a for a in top["coordination"]["stream_assignments"] if a["topic"] == "stream1"]
+                if not found or (args.stream_followers is not None
+                                 and len(found[0]["followers"]) != args.stream_followers):
+                    return None
+                return found[0]
+            placed = wait_for(stream_placed)
+            save(case / "stream-before.json", placed)
+            owner = int(placed["owner"].split("-")[1]) - 1
+            stream_port = broker_port((owner + 1) % copies)
         if args.stream:
-            clients += launch_stream_clients(args, case, env, broker_port(0), launch)
+            clients += launch_stream_clients(args, case, env, stream_port, launch)
         for queue in queues:
             command = [str(args.compare_bin), "--broker", "fibril", "--fibril-sparse-offsets", "--queue", queue,
                        "--endpoint", f"127.0.0.1:{broker_port(owner_index(queue))}", "--copies", str(copies),
@@ -428,7 +452,8 @@ def run(args):
 
         if args.stream:
             after = [process_sample(p) for p in servers]
-            save(case / "after-topology.json", http(endpoints[0], "/admin/api/topology"))
+            live = next(e for i, e in enumerate(endpoints) if servers[i].poll() is None)
+            save(case / "after-topology.json", http(live, "/admin/api/topology"))
             save(case / "summary.json", stream_summary(args, case, before, after, samples))
             print(f"passed {case.name}", flush=True)
             return
@@ -523,9 +548,12 @@ def launch_stream_clients(args, case, env, port, launch):
 
     Readers are spread over processes because one client process saturates
     well before the broker does at high fan-out."""
+    kill = args.kill_owner_at_secs is not None
+    # After an owner kill readers resume from their cursors on the new owner,
+    # and the backlog from the failover takes longer to drain.
     base = [str(args.bin_dir / "bench-stream"), "--durability", args.stream, "--topic", "stream1",
             "--broker-addr", f"127.0.0.1:{port}", "--warmup-secs", str(args.warmup_secs),
-            "--duration-secs", str(args.duration_secs), "--drain-timeout-secs", "10",
+            "--duration-secs", str(args.duration_secs), "--drain-timeout-secs", "30" if kill else "10",
             "--size", str(args.size)]
     procs = max(1, min(args.reader_procs, args.stream_readers))
     clients = []
@@ -534,8 +562,10 @@ def launch_stream_clients(args, case, env, port, launch):
         command = base + ["--mode", "subscribe-only", "--readers", str(readers),
                           "--prefetch", str(args.prefetch), "--reader-name-prefix", f"bench-r{j}",
                           "--json-out", str(case / f"stream-readers-{j}.json")]
-        if args.durable_readers:
+        if args.durable_readers or kill:
             command += ["--durable-readers"]
+        if kill:
+            command += ["--verify-out", str(case / f"stream-readers-{j}-verify.json")]
         clients.append(launch(command, f"stream-readers-{j}", env, case))
     # Let every reader attach before the measured window starts.
     time.sleep(3)
@@ -544,8 +574,32 @@ def launch_stream_clients(args, case, env, port, launch):
                       "--json-out", str(case / "stream-publisher.json")]
     if not args.unconfirmed:
         command += ["--confirmed"]
+    if kill:
+        command += ["--verify-out", str(case / "stream-publisher-verify.json")]
     clients.append(launch(command, "stream-publisher", env, case))
     return clients
+
+
+def stream_failover_check(case):
+    """After an owner kill: every confirmed record reached every reader at
+    least once, and no offset carried two different records."""
+    confirmed = set(json.loads((case / "stream-publisher-verify.json").read_text())["confirmed"])
+    readers = []
+    for f in sorted(case.glob("stream-readers-*-verify.json")):
+        readers += json.loads(f.read_text())["readers"]
+    seen = {}
+    conflicts, missing, repeats = 0, [], 0
+    for deliveries in readers:
+        ids = set()
+        for offset, record in deliveries:
+            if seen.setdefault(offset, record) != record:
+                conflicts += 1
+            repeats += record in ids
+            ids.add(record)
+        missing.append(len(confirmed - ids))
+    return {"confirmed": len(confirmed), "readers": len(readers), "missing_per_reader": missing,
+            "offset_conflicts": conflicts, "repeated_deliveries": repeats,
+            "verdict": "pass" if readers and not conflicts and not any(missing) else "fail"}
 
 
 def stream_summary(args, case, before, after, samples):
@@ -554,17 +608,31 @@ def stream_summary(args, case, before, after, samples):
     readers = [json.loads(f.read_text()) for f in sorted(case.glob("stream-readers-*.json"))
                if re.fullmatch(r"stream-readers-\d+\.json", f.name)]
     sent = publisher["measured_sent"]
-    for r in readers:
-        expected = sent * r["readers"]
-        if r["measured_received"] != expected:
-            raise RuntimeError(f"a reader process saw {r['measured_received']} of {expected} measured records")
-    if publisher["publish_errors"] or publisher["confirm_errors"]:
-        raise RuntimeError(f"publish errors {publisher['publish_errors']}, confirm errors {publisher['confirm_errors']}")
+    failover = None
+    if args.kill_owner_at_secs is not None:
+        # Records in flight at the kill may be lost unconfirmed or arrive
+        # twice, so exact counts do not apply. Confirmed records must arrive.
+        failover = stream_failover_check(case)
+        failover["kill"] = json.loads((case / "kill.json").read_text())
+        failover["publish_errors"] = publisher["publish_errors"]
+        failover["confirm_errors"] = publisher["confirm_errors"]
+        if failover["verdict"] != "pass":
+            raise RuntimeError(f"stream failover check failed: {failover}")
+    else:
+        for r in readers:
+            expected = sent * r["readers"]
+            if r["measured_received"] != expected:
+                raise RuntimeError(f"a reader process saw {r['measured_received']} of {expected} measured records")
+        if publisher["publish_errors"] or publisher["confirm_errors"]:
+            raise RuntimeError(f"publish errors {publisher['publish_errors']}, confirm errors {publisher['confirm_errors']}")
     delivered = sum(r["measured_received"] for r in readers)
     top = json.loads((case / "after-topology.json").read_text())
     assignment = next((a for a in top.get("coordination", {}).get("stream_assignments", [])
                        if a.get("topic") == "stream1"), None)
-    cpu = sum(a["cpu_seconds"] - b["cpu_seconds"] for a, b in zip(after, before))
+    if failover is not None:
+        failover["after"] = assignment
+    # A killed broker has no closing sample.
+    cpu = sum(a["cpu_seconds"] - b["cpu_seconds"] for a, b in zip(after, before) if "cpu_seconds" in a)
     worst = lambda key, stat: max((r[key] or {}).get(stat, 0) for r in readers)
     return {
         "status": "passed",
@@ -582,6 +650,7 @@ def stream_summary(args, case, before, after, samples):
         "cpu_seconds_per_million_published": cpu * 1e6 / max(1, publisher["sent_total"]),
         "cpu_seconds_per_million_delivered": cpu * 1e6 / max(1, sum(r["received_total"] for r in readers)),
         "peak_rss_mib": max((sum(s.get("rss_kib", 0) for s in sample["servers"]) for sample in samples), default=0) / 1024,
+        "failover": failover,
     }
 
 
@@ -803,6 +872,8 @@ def main():
     parser.add_argument("--reader-procs", type=int, default=2, help="Client processes the stream readers are spread over")
     parser.add_argument("--durable-readers", action="store_true",
                         help="Stream readers keep named cursors, which exercises cursor commits and their replication")
+    parser.add_argument("--stream-followers", type=int,
+                        help="Followers of a durable stream partition, the cluster stream_replication_factor")
     parser.add_argument("--idle-queues", type=int,
                         help="Extra queues declared and left without traffic, then a quiet window measures their cost. 0 measures the baseline")
     parser.add_argument("--confirm-window", type=int, default=32768)
@@ -850,8 +921,8 @@ def main():
                         help="Which broker --kill-owner-at-secs kills: the first queue's owner, an owner that is "
                              "not the controller, or the controller")
     parser.add_argument("--kill-owner-at-secs", type=float, default=None,
-                        help="SIGKILL the first queue's owner this many seconds into the workload "
-                             "(implies --survive-broker-loss)")
+                        help="SIGKILL the first queue's owner, or the stream's owner with --stream, this "
+                             "many seconds into the workload (implies --survive-broker-loss)")
     args = parser.parse_args()
     if args.kill_owner_at_secs is not None:
         args.survive_broker_loss = True
@@ -864,10 +935,15 @@ def main():
                           "FIBRIL_COORDINATION_RAFT_ELECTION_TIMEOUT_MAX_MS=1000"]
     if args.burst_pattern and not args.rate:
         parser.error("--burst-pattern needs --rate")
-    if args.stream and (not args.rate or args.survive_broker_loss or args.burst_pattern or args.rate_profile
-                        or args.consumer_pause or args.perf):
-        parser.error("--stream needs --rate and does not support broker loss, burst, rate profile, "
-                     "consumer pause or perf options yet")
+    stream_kill = args.stream and args.kill_owner_at_secs is not None
+    if args.stream and (not args.rate or (args.survive_broker_loss and not stream_kill) or args.burst_pattern
+                        or args.rate_profile or args.consumer_pause or args.perf):
+        parser.error("--stream needs --rate and does not support broker loss other than "
+                     "--kill-owner-at-secs, burst, rate profile, consumer pause or perf options yet")
+    if stream_kill and (args.copies != 3 or args.kill_target != "owner" or args.stream != "durable"
+                        or args.unconfirmed):
+        parser.error("a stream owner kill needs three copies, --kill-target owner, a durable stream "
+                     "and confirmed publishes")
     if args.burst_pattern:
         # In whole messages: a float cycle like 0.7 s does not divide 7 s exactly.
         total = sum(int(n) for n in args.burst_pattern.split(","))

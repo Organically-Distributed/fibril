@@ -26,6 +26,8 @@ use tokio::time::{Instant, MissedTickBehavior, timeout};
 
 #[derive(Default)]
 struct ReaderStats {
+    /// `(offset, record id)` for every delivery, kept with `--verify-out`.
+    deliveries: Vec<(u64, u64)>,
     received_total: u64,
     measured_received: u64,
     publish_to_server_receive_ms: Vec<u64>,
@@ -35,6 +37,8 @@ struct ReaderStats {
 
 #[derive(Default)]
 struct WriterStats {
+    /// Ids of confirmed records, kept with `--verify-out`.
+    confirmed_ids: Vec<u64>,
     sent_total: u64,
     measured_sent: u64,
     confirmed_total: u64,
@@ -155,6 +159,18 @@ struct Args {
     /// Also write the results as JSON to this path.
     #[arg(long)]
     json_out: Option<std::path::PathBuf>,
+
+    /// Give every record a unique id and write what was confirmed (publish
+    /// side) or delivered at which offset (subscribe side) to this path, so a
+    /// broker loss can be checked for lost confirmed records and offsets that
+    /// carried two different records. Needs `--size` of at least 9.
+    #[arg(long)]
+    verify_out: Option<std::path::PathBuf>,
+}
+
+/// Record ids live in bytes 1 to 8, after the measured marker.
+fn record_id(payload: &[u8]) -> Option<u64> {
+    Some(u64::from_be_bytes(payload.get(1..9)?.try_into().ok()?))
 }
 
 fn rate_for_writer(rate_per_sec: u64, writers: usize, writer_id: usize) -> u64 {
@@ -177,6 +193,11 @@ async fn main() {
     if args.mode != BenchMode::PublishOnly {
         assert!(args.readers > 0, "readers must be > 0");
     }
+    let verify = args.verify_out.is_some();
+    assert!(
+        !verify || args.size >= 9,
+        "--verify-out needs --size of at least 9"
+    );
 
     let address = args.broker_addr;
     let measure_start = Instant::now() + Duration::from_secs(args.warmup_secs);
@@ -234,6 +255,7 @@ async fn main() {
             writers_done.clone(),
             measured_sent_total.clone(),
             args.drain_timeout_secs,
+            verify,
         )
     };
 
@@ -260,14 +282,17 @@ async fn main() {
             measure_start,
             measure_end,
             measured_sent_total.clone(),
+            verify,
         )
         .await
     };
     writers_done.store(true, Ordering::Release);
 
     let mut reader_stats = ReaderStats::default();
+    let mut deliveries = Vec::new();
     for handle in reader_handles {
-        let stats = handle.await.unwrap();
+        let mut stats = handle.await.unwrap();
+        deliveries.push(std::mem::take(&mut stats.deliveries));
         reader_stats.received_total += stats.received_total;
         reader_stats.measured_received += stats.measured_received;
         reader_stats
@@ -323,6 +348,13 @@ async fn main() {
             &mut writer_stats.confirm_latency_ms.clone(),
         );
     }
+    if let Some(path) = &args.verify_out {
+        let out = serde_json::json!({
+            "confirmed": writer_stats.confirmed_ids,
+            "readers": deliveries,
+        });
+        std::fs::write(path, serde_json::to_vec(&out).unwrap()).unwrap();
+    }
     if let Some(path) = &args.json_out {
         // The latency vectors are sorted by print_latency above.
         let summary = |values: &[u64]| {
@@ -377,6 +409,7 @@ fn start_readers(
     writers_done: Arc<AtomicBool>,
     measured_sent_total: Arc<AtomicU64>,
     drain_timeout_secs: u64,
+    verify: bool,
 ) -> Vec<tokio::task::JoinHandle<ReaderStats>> {
     let mut handles = Vec::new();
     for reader_index in 0..readers {
@@ -432,6 +465,10 @@ fn start_readers(
                 };
 
                 stats.received_total += 1;
+                if verify && let Some(id) = record_id(&msg.payload) {
+                    // A stream delivery tag is the record offset.
+                    stats.deliveries.push((msg.delivery_tag.epoch, id));
+                }
                 if is_measured_payload(&msg.payload) {
                     stats.measured_received += 1;
                     let now = unix_millis();
@@ -466,6 +503,7 @@ async fn run_rate_limited_writers(
     measure_start: Instant,
     measure_end: Instant,
     measured_sent_total: Arc<AtomicU64>,
+    verify: bool,
 ) -> WriterStats {
     let mut handles = Vec::new();
     for writer_id in 0..writers {
@@ -491,12 +529,16 @@ async fn run_rate_limited_writers(
             let mut tick = tokio::time::interval(period);
             tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
             let mut inflight = FuturesUnordered::new();
+            let mut attempts = 0u64;
 
             let record_confirm =
-                |stats: &mut WriterStats, measured: bool, sent_at: Instant, result: Result<(), ()>| {
+                |stats: &mut WriterStats, measured: bool, id: u64, sent_at: Instant, result: Result<(), ()>| {
                     match result {
                         Ok(()) => {
                             stats.confirmed_total += 1;
+                            if verify {
+                                stats.confirmed_ids.push(id);
+                            }
                             if measured {
                                 stats.confirm_latency_ms.push(sent_at.elapsed().as_millis() as u64);
                             }
@@ -508,8 +550,8 @@ async fn run_rate_limited_writers(
             loop {
                 tokio::select! {
                     biased;
-                    Some((measured, sent_at, result)) = inflight.next(), if !inflight.is_empty() => {
-                        record_confirm(&mut stats, measured, sent_at, result);
+                    Some((measured, id, sent_at, result)) = inflight.next(), if !inflight.is_empty() => {
+                        record_confirm(&mut stats, measured, id, sent_at, result);
                     }
                     _ = tick.tick(), if Instant::now() < measure_end
                         && (!confirmed || inflight.len() < confirm_window) => {
@@ -521,6 +563,11 @@ async fn run_rate_limited_writers(
                         let mut payload = vec![8u8; payload_size];
                         if measured {
                             payload[0] = 1;
+                        }
+                        let id = ((writer_id as u64) << 40) | attempts;
+                        attempts += 1;
+                        if verify {
+                            payload[1..9].copy_from_slice(&id.to_be_bytes());
                         }
                         if confirmed {
                             let sent_at = Instant::now();
@@ -537,7 +584,7 @@ async fn run_rate_limited_writers(
                                     inflight.push(async move {
                                         let result =
                                             confirmation.confirmed().await.map(|_| ()).map_err(|_| ());
-                                        (measured, sent_at, result)
+                                        (measured, id, sent_at, result)
                                     });
                                 }
                                 Err(_) => stats.publish_errors += 1,
@@ -559,8 +606,8 @@ async fn run_rate_limited_writers(
                 }
             }
 
-            while let Some((measured, sent_at, result)) = inflight.next().await {
-                record_confirm(&mut stats, measured, sent_at, result);
+            while let Some((measured, id, sent_at, result)) = inflight.next().await {
+                record_confirm(&mut stats, measured, id, sent_at, result);
             }
             stats
         }));
@@ -575,6 +622,7 @@ async fn run_rate_limited_writers(
         total.publish_errors += stats.publish_errors;
         total.confirm_errors += stats.confirm_errors;
         total.confirm_latency_ms.extend(stats.confirm_latency_ms);
+        total.confirmed_ids.extend(stats.confirmed_ids);
     }
     total
 }

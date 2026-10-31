@@ -90,6 +90,23 @@ The summary lists the lost broker and, per queue, the confirmed, delivered,
 lost, phantom, unknown-outcome and repeated counts. Latency in such a run
 includes the failover pause.
 
+With `--stream durable`, `--kill-owner-at-secs` kills the stream's owner
+instead. The stream is declared before the clients start, so they can use a
+broker that survives, and the readers keep durable cursors so they resume on
+the new owner. Every record carries an id. The run passes when every confirmed
+record reached every reader at least once and no offset carried two different
+records. `--stream-followers 2` puts the stream on all three nodes:
+
+```sh
+python3 benchmarks/cluster/bench.py --output results/kill-stream-owner --storage /path/on/test/drive \
+  --stream durable --stream-followers 2 --rate 1000 --warmup-secs 3 --duration-secs 17 \
+  --stream-readers 2 --reader-procs 1 --kill-owner-at-secs 8
+```
+
+The summary's `failover` entry holds the confirmed count, missing records per
+reader, offset conflicts, repeated deliveries, confirm errors at the kill and
+the assignment after it.
+
 ## Reading results
 
 `summary.json` in each run directory carries a label (nodes, policy, queue
