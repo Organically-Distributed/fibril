@@ -56,11 +56,11 @@ are isolated behind small helpers) so a future 3.10 backport stays localized.
 
 ## More
 
-- [Client architecture](https://github.com/Axmouth/fibril/blob/main/clients/ARCHITECTURE.md), the layering and invariants shared by every client
-- [Feature matrix](https://github.com/Axmouth/fibril/blob/main/clients/FEATURE_MATRIX.md), what each client supports
+- [Client architecture](https://github.com/Organically-Distributed/fibril/blob/main/clients/ARCHITECTURE.md), the layering and invariants shared by every client
+- [Feature matrix](https://github.com/Organically-Distributed/fibril/blob/main/clients/FEATURE_MATRIX.md), what each client supports
 - [Documentation](https://fibril.sh)
 
 ## License
 
-MIT. See [AI_POLICY.md](https://github.com/Axmouth/fibril/blob/main/AI_POLICY.md)
+MIT. See [AI_POLICY.md](https://github.com/Organically-Distributed/fibril/blob/main/AI_POLICY.md)
 for the text and data mining reservation that comes with this package.

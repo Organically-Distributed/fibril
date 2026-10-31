@@ -138,7 +138,7 @@ docker run --rm \
 Use this when you want the simplest path from the current repository state:
 
 ```sh
-git clone https://github.com/Axmouth/fibril.git
+git clone https://github.com/Organically-Distributed/fibril.git
 cd fibril
 cargo run --release --bin fibril-server
 ```

@@ -11,11 +11,11 @@
   ],
   "homepage": "https://fibril.sh",
   "bugs": {
-    "url": "https://github.com/Axmouth/fibril/issues"
+    "url": "https://github.com/Organically-Distributed/fibril/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Axmouth/fibril.git",
+    "url": "git+https://github.com/Organically-Distributed/fibril.git",
     "directory": "clients/typescript"
   },
   "license": "MIT",

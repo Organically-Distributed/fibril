@@ -7,7 +7,7 @@
 # Clustering is experimental and not yet production-ready high availability.
 set -eu
 
-REPO="${FIBRIL_REPO:-Axmouth/fibril}"
+REPO="${FIBRIL_REPO:-Organically-Distributed/fibril}"
 REF="${FIBRIL_REF:-main}"
 COMPOSE_URL="${FIBRIL_COMPOSE_URL:-https://raw.githubusercontent.com/${REPO}/${REF}/compose.cluster.example.yaml}"
 WORKDIR="${FIBRIL_TRYOUT_DIR:-fibril-tryout}"

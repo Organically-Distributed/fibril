@@ -30,7 +30,7 @@ export default defineConfig({
         { tag: "link", attrs: { rel: "icon", type: "image/svg+xml", sizes: "any", href: "/brand/fibril-mark.svg" } },
       ],
       social: [
-        { icon: "github", label: "GitHub", href: "https://github.com/Axmouth/fibril" },
+        { icon: "github", label: "GitHub", href: "https://github.com/Organically-Distributed/fibril" },
       ],
       plugins: [
         starlightVersions({

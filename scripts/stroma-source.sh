@@ -22,17 +22,17 @@ fi
 
 patch_block='# Local development uses the sibling Keratin checkout while committed
 # dependency lines stay git-sourced for CI, Docker, and release builds.
-[patch."https://github.com/Axmouth/keratin.git"]
+[patch."https://github.com/Organically-Distributed/keratin.git"]
 stroma-core = { path = "../keratin/stroma/core" }
 stroma-common = { path = "../keratin/stroma/common" }
 keratin-log = { path = "../keratin/keratin-log" }
 
-[patch."https://github.com/Axmouth/ganglion.git"]
+[patch."https://github.com/Organically-Distributed/ganglion.git"]
 ganglion-core = { path = "../ganglion/crates/ganglion-core" }
 ganglion-openraft = { path = "../ganglion/crates/ganglion-openraft" }
 ganglion = { path = "../ganglion/crates/ganglion" }'
 
-# Remove every local [patch."https://github.com/Axmouth/*.git"] block (Keratin and
+# Remove every local [patch."https://github.com/Organically-Distributed/*.git"] block (Keratin and
 # Ganglion) plus the shared development comment that introduces them.
 remove_patch_blocks() {
   python3 - <<'PY'
@@ -44,7 +44,7 @@ lines = path.read_text().splitlines()
 out = []
 i = 0
 n = len(lines)
-header = re.compile(r'^\[patch\."https://github\.com/Axmouth/[^"]+\.git"\]$')
+header = re.compile(r'^\[patch\."https://github\.com/(Organically-Distributed|Axmouth)/[^"]+\.git"\]$')
 
 def dev_comment_before_patch(idx):
     if not (
@@ -80,8 +80,8 @@ case "$1" in
     echo "Cargo.toml: removed local Keratin and Ganglion patch overrides"
     ;;
   local)
-    if grep -Fq '[patch."https://github.com/Axmouth/keratin.git"]' Cargo.toml \
-      || grep -Fq '[patch."https://github.com/Axmouth/ganglion.git"]' Cargo.toml; then
+    if grep -Fq '[patch."https://github.com/Organically-Distributed/keratin.git"]' Cargo.toml \
+      || grep -Fq '[patch."https://github.com/Organically-Distributed/ganglion.git"]' Cargo.toml; then
       echo "Cargo.toml: local patch overrides already present"
     else
       printf '\n%s\n' "$patch_block" >> Cargo.toml

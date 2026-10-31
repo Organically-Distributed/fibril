@@ -11,7 +11,7 @@ blake3 = "1.8"
 fibril-metrics = { path = "../metrics" }
 fibril-common.workspace = true
 fibril-util = { workspace = true, features = ["server"] }
-stroma-core = { git = "https://github.com/Axmouth/keratin.git", branch = "main" }
+stroma-core = { git = "https://github.com/Organically-Distributed/keratin.git", branch = "main" }
 stroma-common.workspace = true
 anyhow = "1.0"
 arc-swap = "1.9"

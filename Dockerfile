@@ -23,7 +23,7 @@ ARG VCS_REF=unknown
 
 LABEL org.opencontainers.image.title="Fibril server" \
       org.opencontainers.image.description="Pre-alpha Fibril message broker server" \
-      org.opencontainers.image.source="https://github.com/Axmouth/fibril" \
+      org.opencontainers.image.source="https://github.com/Organically-Distributed/fibril" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.licenses="MIT"
 

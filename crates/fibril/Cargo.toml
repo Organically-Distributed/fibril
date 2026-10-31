@@ -19,8 +19,8 @@ fibril-metrics = { path = "../metrics" }
 fibril-tls = { path = "../tls" }
 fibril-util = { workspace = true, features = ["server"] }
 fibril-coordination-ganglion = { path = "../coordination-ganglion" }
-ganglion-core = { git = "https://github.com/Axmouth/ganglion.git", branch = "main" }
-ganglion = { git = "https://github.com/Axmouth/ganglion.git", branch = "main" }
+ganglion-core = { git = "https://github.com/Organically-Distributed/ganglion.git", branch = "main" }
+ganglion = { git = "https://github.com/Organically-Distributed/ganglion.git", branch = "main" }
 anyhow = "1.0"
 async-trait = "0.1"
 fastrand = "2"
@@ -41,7 +41,7 @@ opentelemetry = "0.31"
 opentelemetry_sdk = "0.31"
 
 [dev-dependencies]
-keratin-log = { git = "https://github.com/Axmouth/keratin.git", branch = "main" }
+keratin-log = { git = "https://github.com/Organically-Distributed/keratin.git", branch = "main" }
 fibril-client = { path = "../client" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 sha2 = "0.10"

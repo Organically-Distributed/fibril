@@ -69,7 +69,7 @@ If you would rather not pipe a script into your shell, fetch the Compose file an
 run it yourself:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Axmouth/fibril/main/compose.cluster.example.yaml -o fibril-cluster.yaml
+curl -fsSL https://raw.githubusercontent.com/Organically-Distributed/fibril/main/compose.cluster.example.yaml -o fibril-cluster.yaml
 docker compose -f fibril-cluster.yaml up
 ```
 
@@ -100,7 +100,7 @@ If you would rather not pipe a script into your shell, fetch the Compose file an
 run the visualizer yourself (it needs `run`, not `up`, for a real terminal):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Axmouth/fibril/main/compose.viz.example.yaml -o fibril-viz.yaml
+curl -fsSL https://raw.githubusercontent.com/Organically-Distributed/fibril/main/compose.viz.example.yaml -o fibril-viz.yaml
 docker compose -f fibril-viz.yaml run --rm viz
 docker compose -f fibril-viz.yaml down -v   # stop the broker and remove its data
 ```

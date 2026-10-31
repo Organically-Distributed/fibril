@@ -3,9 +3,9 @@
 # Fibril
 **The connective tissue of distributed systems.**
 
-[![Server CI](https://github.com/Axmouth/fibril/actions/workflows/rust-ci.yaml/badge.svg)](https://github.com/Axmouth/fibril/actions/workflows/rust-ci.yaml)
-[![TypeScript client CI](https://github.com/Axmouth/fibril/actions/workflows/typescript-client-ci.yaml/badge.svg)](https://github.com/Axmouth/fibril/actions/workflows/typescript-client-ci.yaml)
-[![Deploy website](https://github.com/Axmouth/fibril/actions/workflows/deploy-website.yaml/badge.svg)](https://github.com/Axmouth/fibril/actions/workflows/deploy-website.yaml)
+[![Server CI](https://github.com/Organically-Distributed/fibril/actions/workflows/rust-ci.yaml/badge.svg)](https://github.com/Organically-Distributed/fibril/actions/workflows/rust-ci.yaml)
+[![TypeScript client CI](https://github.com/Organically-Distributed/fibril/actions/workflows/typescript-client-ci.yaml/badge.svg)](https://github.com/Organically-Distributed/fibril/actions/workflows/typescript-client-ci.yaml)
+[![Deploy website](https://github.com/Organically-Distributed/fibril/actions/workflows/deploy-website.yaml/badge.svg)](https://github.com/Organically-Distributed/fibril/actions/workflows/deploy-website.yaml)
 
 [Docs](https://fibril.sh/) · [Run Fibril](https://fibril.sh/deployment/source/)
 
@@ -103,17 +103,17 @@ workload against Fibril, NATS JetStream and RabbitMQ, and
 * **Keratin** is the storage layer: a small, fast append-only segmented log,
   kept independent of broker logic. It also holds **Stroma**, the queue and
   stream state machine on top of Keratin, which handles snapshots, checkpoints,
-  recovery and sealing. https://github.com/Axmouth/keratin
+  recovery and sealing. https://github.com/Organically-Distributed/keratin
 
 * **Ganglion** is the raft coordination library behind clustering, built on
-  openraft. https://github.com/Axmouth/ganglion
+  openraft. https://github.com/Organically-Distributed/ganglion
 
 ### Local Keratin development
 
 CI and release builds use `stroma-core` from the Keratin git repository:
 
 ```txt
-https://github.com/Axmouth/keratin.git
+https://github.com/Organically-Distributed/keratin.git
 ```
 
 For local sibling-checkout development, keep the crate dependency lines

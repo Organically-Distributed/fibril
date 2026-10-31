@@ -113,8 +113,8 @@ saturation improved in the tested burst and 8 KiB smooth shapes with lower peak
 memory, tmpfs saturation lost about 3.5%, and SATA failover readiness with a 50k
 live backlog rose from 2.52-2.73 s to 2.91 s. The adoption includes crash-boundary, learner, reseed
 and owner-loss coverage in
-[Keratin 77b514c](https://github.com/Axmouth/keratin/commit/77b514c) and
-[Fibril 886f239](https://github.com/Axmouth/fibril/commit/886f239), with a breaking
+[Keratin 77b514c](https://github.com/Organically-Distributed/keratin/commit/77b514c) and
+[Fibril 886f239](https://github.com/Organically-Distributed/fibril/commit/886f239), with a breaking
 fresh-storage requirement and unchanged stream storage.
 
 ## Storage writer experiments
@@ -362,7 +362,7 @@ A stopped embedded Raft core could keep answering fatal errors on a cached socke
 preventing retries from reaching its replacement. Requests own their socket until
 a complete response arrives, and cancellation, failed exchanges and fatal replies
 retire it. Two deterministic regressions and the repeated learner-restart
-acceptance test cover the repair ([Ganglion 7e96cf0](https://github.com/Axmouth/ganglion/commit/7e96cf0)).
+acceptance test cover the repair ([Ganglion 7e96cf0](https://github.com/Organically-Distributed/ganglion/commit/7e96cf0)).
 
 ### Metadata TCP delays during recovery
 
@@ -399,7 +399,7 @@ A metadata election could temporarily leave only one broker marked live, causing
 majority placement to propose a lower confirmation threshold and then a second
 recovery as heartbeats returned. The controller holds that proposal until it can
 preserve the existing write requirement. Confirmed process-loss checks exercise
-recovery onto two survivors. The fix and regression are in [5c6557d](https://github.com/Axmouth/fibril/commit/5c6557d).
+recovery onto two survivors. The fix and regression are in [5c6557d](https://github.com/Organically-Distributed/fibril/commit/5c6557d).
 
 ### Replication after checkpoint admission
 
@@ -408,7 +408,7 @@ at zero despite having installed a checkpoint beyond the retained event head.
 Accepted-history workers resume from the admitted storage's complete, idle
 applied boundary, with current identity rechecked before adoption. A learner
 regression confirms a new publication using that follower after checkpoint
-admission. See [5c6557d](https://github.com/Axmouth/fibril/commit/5c6557d).
+admission. See [5c6557d](https://github.com/Organically-Distributed/fibril/commit/5c6557d).
 
 ### Eager peer-failure detection
 
@@ -745,7 +745,7 @@ queue state referring to removed message bodies. A durable installation journal
 resumes replacement before ordinary recovery, and a completion receipt prevents
 retries from erasing later backfill. Snapshot fencing rejects stale writes after
 installation or eviction. Linux fault, cancellation and six-boundary SIGKILL tests
-cover [Keratin 76f1469](https://github.com/Axmouth/keratin/commit/76f1469).
+cover [Keratin 76f1469](https://github.com/Organically-Distributed/keratin/commit/76f1469).
 Queue checkpoints install only through the authorized learner path.
 
 ### Manifest replacement crash window
@@ -753,7 +753,7 @@ Queue checkpoints install only through the authorized learner path.
 Manifest storage removed the old file before renaming its replacement, allowing a
 failed rename or crash to lose the persisted epoch. Direct replacement preserves
 the previous manifest on rename failure and synchronizes both affected directories
-on Unix. An injected-failure regression covers [Keratin 3435e3d](https://github.com/Axmouth/keratin/commit/3435e3d).
+on Unix. An injected-failure regression covers [Keratin 3435e3d](https://github.com/Organically-Distributed/keratin/commit/3435e3d).
 Windows metadata durability still requires separate implementation and testing.
 
 ### Replication wakeups independent of confirmation waits
@@ -781,7 +781,7 @@ A persisted seal keeps queue and stream evidence intact across restart, eviction
 and interrupted fencing of their logs. The storage primitive blocks ordinary
 reopening and cleanup and supports identical-request retries. Failure tests cover
 caller cancellation, a failed writer, partial fencing, damaged markers and startup
-suffix repair in [Keratin 617e1e8](https://github.com/Axmouth/keratin/commit/617e1e8).
+suffix repair in [Keratin 617e1e8](https://github.com/Organically-Distributed/keratin/commit/617e1e8).
 
 ### Epoch persistence retries
 
@@ -789,7 +789,7 @@ An epoch update changed the in-memory manifest before its disk write succeeded,
 allowing a retry to return success without retrying the failed write. The update
 publishes the new in-memory epoch only after persistence succeeds. A filesystem
 fault test verifies repeated failure followed by successful durable retry in
-[Keratin 71b2f56](https://github.com/Axmouth/keratin/commit/71b2f56).
+[Keratin 71b2f56](https://github.com/Organically-Distributed/keratin/commit/71b2f56).
 
 ### Pending recovery before replicated assignment replacement
 
@@ -806,7 +806,7 @@ durable frontier, even when the requested batch is larger. Incomplete coverage,
 decode failures and offset discontinuities fall back to the file reader. Rollover,
 eviction and reopen parity are covered by regression tests. The initial three-node
 SATA/NVMe screen found overlapping throughput and latency ranges, so this change
-carries no end-to-end speedup claim. See [Keratin dd7943e](https://github.com/Axmouth/keratin/commit/dd7943e).
+carries no end-to-end speedup claim. See [Keratin dd7943e](https://github.com/Organically-Distributed/keratin/commit/dd7943e).
 
 ### Queue replication dependencies and follower persistence
 
@@ -834,7 +834,7 @@ durability continuation was delayed. Keratin reserves an application turn under
 the append-order lock, allowing persistence to overlap while preserving state
 submission order. Failed or abandoned turns fail the chain closed until recovery.
 A deterministic overtaking test and the Stroma regression suite cover
-[Keratin 0944dd6](https://github.com/Axmouth/keratin/commit/0944dd6).
+[Keratin 0944dd6](https://github.com/Organically-Distributed/keratin/commit/0944dd6).
 
 ### Settlement ownership and ignored requests
 
@@ -843,7 +843,7 @@ tag, and ignored or duplicate requests could leave settlement-drain accounting
 nonzero. Ownership validation and removal share the same map lock, while ignored
 requests release their accounting without changing consumer credit. The
 ordinary-broker regression covers wrong-consumer ACK/NACK/reject requests,
-duplicate ACKs and graceful drain in [Fibril d64577d](https://github.com/Axmouth/fibril/commit/d64577d).
+duplicate ACKs and graceful drain in [Fibril d64577d](https://github.com/Organically-Distributed/fibril/commit/d64577d).
 
 ### Ordered benchmark confirmations
 
@@ -894,7 +894,7 @@ reducing repeated construction and traversal of the cluster view. Six 45-second
 SATA runs at 250k/s offered used 21.0% less broker CPU per confirmation, with no
 consistent p99 direction. Native replication and live-repartition checks covered
 routing equivalence and stale partition versions. The implementation is in
-[fibril 94cc1e8](https://github.com/Axmouth/fibril/commit/94cc1e8de25d9e6819347ba86582d888d9af4427).
+[fibril 94cc1e8](https://github.com/Organically-Distributed/fibril/commit/94cc1e8de25d9e6819347ba86582d888d9af4427).
 
 ### Rust ACK write coalescing (adopted)
 
@@ -903,7 +903,7 @@ flushes the tail immediately when that drain ends, reducing socket writes while
 preserving frame order and settlement history. In localhost tmpfs delivery-only
 runs with 128-byte payloads, four readers, prefetch 16384 and 20 million preloaded
 messages, mean throughput rose from about 529k to 1.03M messages/s across two runs
-per variant. [fibril e713600](https://github.com/Axmouth/fibril/commit/e713600697be21ef73afa662b889128304bf5e20) includes ordering, boundary,
+per variant. [fibril e713600](https://github.com/Organically-Distributed/fibril/commit/e713600697be21ef73afa662b889128304bf5e20) includes ordering, boundary,
 small-window and failed-flush coverage.
 
 ### Python and TypeScript publish buffering (adopted)
@@ -911,7 +911,7 @@ small-window and failed-flush coverage.
 Pipelined confirmed publishes share bounded socket writes while retaining their
 individual frames and confirmation results. Both clients expose count, byte and
 time limits plus an immediate-write option. Python's ordinary awaited publish
-keeps its immediate-send path. See [fibril e713600](https://github.com/Axmouth/fibril/commit/e713600697be21ef73afa662b889128304bf5e20).
+keeps its immediate-send path. See [fibril e713600](https://github.com/Organically-Distributed/fibril/commit/e713600697be21ef73afa662b889128304bf5e20).
 
 ### Prompt socket-tail flushing (adopted)
 
@@ -920,7 +920,7 @@ its existing busy-batch bounds and durability gates. In same-host SATA ext4
 runs with 1 KiB messages and one outstanding confirmation, mean per-run median
 confirmation latency fell from about 6.0 ms to 1.4 ms. The higher-concurrency
 Rust screen showed roughly 3-6% more broker CPU per message and small throughput
-changes. [fibril dc878c9](https://github.com/Axmouth/fibril/commit/dc878c98d2f51f5a5da3954a470e3db7f5559c35) includes writer and replication-gate tests.
+changes. [fibril dc878c9](https://github.com/Organically-Distributed/fibril/commit/dc878c98d2f51f5a5da3954a470e3db7f5559c35) includes writer and replication-gate tests.
 
 ### Larger delivery cache (experiment retained, defaults unchanged)
 
@@ -943,22 +943,22 @@ isolation identified client ACK writes as a stronger delivery limit.
 After an owner change, a node that stayed a follower could receive a no-op
 assignment transition and keep pulling from the previous owner. The planner
 refreshes that follower when its source or epoch changes, and the worker retains
-its continuation offsets while retargeting: [fibril 3fc4253](https://github.com/Axmouth/fibril/commit/3fc4253d3e5b0d837c815055915c64cf2ca7f2e8).
+its continuation offsets while retargeting: [fibril 3fc4253](https://github.com/Organically-Distributed/fibril/commit/3fc4253d3e5b0d837c815055915c64cf2ca7f2e8).
 
 ### Retired partitions reopened during cleanup (fixed)
 
 Late cleanup or a stale reconnect could recreate a partition after shrink had
 deleted it. Workers stop before deletion, storage cleanup avoids creating missing
 partitions, and a local retirement fence rejects stale access until a fresh
-assignment admits the partition again: [fibril 8edb75f](https://github.com/Axmouth/fibril/commit/8edb75febc5669f70bb34bea65d2df1e653a37ec) and
-[keratin 470d9e4](https://github.com/Axmouth/keratin/commit/470d9e423968e9b40121773a5b2d13c8d1af7ea8).
+assignment admits the partition again: [fibril 8edb75f](https://github.com/Organically-Distributed/fibril/commit/8edb75febc5669f70bb34bea65d2df1e653a37ec) and
+[keratin 470d9e4](https://github.com/Organically-Distributed/keratin/commit/470d9e423968e9b40121773a5b2d13c8d1af7ea8).
 
 ### Confirmation waiter missed the final progress update (fixed)
 
 A follower could report sufficient durable progress between the confirmation
 waiter's progress check and notification registration, leaving the waiter asleep
 until timeout. Registration precedes the check, with a paused-time test that
-forces the old race: [fibril 7f40f92](https://github.com/Axmouth/fibril/commit/7f40f929dd2137c440f33dfe30073e54c3971cc6).
+forces the old race: [fibril 7f40f92](https://github.com/Organically-Distributed/fibril/commit/7f40f929dd2137c440f33dfe30073e54c3971cc6).
 
 ### Independent declarations produced conflicting event histories (fixed)
 
@@ -966,15 +966,15 @@ A broker receiving a declaration could append its own event before placement,
 leaving a different record at an offset later supplied by the assigned owner.
 Declarations carry settings through coordination and only assigned owners append
 them. Followers receive those events through replication:
-[fibril 990765e](https://github.com/Axmouth/fibril/commit/990765e77e09ce04ae504622b870803c26e1af89) and [keratin 0b75fd5](https://github.com/Axmouth/keratin/commit/0b75fd55879a7fda0592fc1f31baa770ab24fb33).
+[fibril 990765e](https://github.com/Organically-Distributed/fibril/commit/990765e77e09ce04ae504622b870803c26e1af89) and [keratin 0b75fd5](https://github.com/Organically-Distributed/keratin/commit/0b75fd55879a7fda0592fc1f31baa770ab24fb33).
 
 ### Checkpoint reset discarded source epochs (fixed)
 
 Checkpoint installation dropped the source epochs before destructive log resets,
 allowing a stale checkpoint to pass an already-advanced local fence. Source epochs
 reach storage, are validated before reset submission, and are checked again by
-each writer in command order: [fibril dc878c9](https://github.com/Axmouth/fibril/commit/dc878c98d2f51f5a5da3954a470e3db7f5559c35) and
-[keratin 11ef6a9](https://github.com/Axmouth/keratin/commit/11ef6a9455dc9a992a234c8d5ca8b4e9951899cd).
+each writer in command order: [fibril dc878c9](https://github.com/Organically-Distributed/fibril/commit/dc878c98d2f51f5a5da3954a470e3db7f5559c35) and
+[keratin 11ef6a9](https://github.com/Organically-Distributed/keratin/commit/11ef6a9455dc9a992a234c8d5ca8b4e9951899cd).
 
 ### Replication conflicts lacked preceding context (diagnostics added)
 
@@ -983,14 +983,14 @@ identities, with payloads and headers excluded. An isolated reintroduction of th
 declaration bug produced a report showing the local declaration and the incoming
 enqueue at event offset zero. See the
 [diagnostic format](/development/replication-design/#overlap-diagnostics)
-and [keratin 11ef6a9](https://github.com/Axmouth/keratin/commit/11ef6a9455dc9a992a234c8d5ca8b4e9951899cd).
+and [keratin 11ef6a9](https://github.com/Organically-Distributed/keratin/commit/11ef6a9455dc9a992a234c8d5ca8b4e9951899cd).
 
 ### Interrupted checkpoints and early promotion (fixed)
 
 Isolated storage tests reproduced reopening after a message-log reset with
 snapshot references to missing bodies, and local-tail promotion before
 checkpoint-required message backfill completed. Evidence and test scenarios are
-recorded in [fibril b14a91a](https://github.com/Axmouth/fibril/commit/b14a91a9690f543df7977f3da871d6de110c199e).
+recorded in [fibril b14a91a](https://github.com/Organically-Distributed/fibril/commit/b14a91a9690f543df7977f3da871d6de110c199e).
 The recoverable installation journal and the payload-frontier checks on promotion
 described above close both cases.
 
@@ -1001,4 +1001,4 @@ described above close both cases.
 Scheduled commits could exceed the inflight limit and block the writer while
 the fsync worker was blocked returning completions, producing a circular wait.
 Every fsync handoff waits for capacity by draining completions first. The stress
-reproduction and fix are recorded in [keratin 3cb1218](https://github.com/Axmouth/keratin/commit/3cb121821e99aabdac35e73477b0b26a38789bd6).
+reproduction and fix are recorded in [keratin 3cb1218](https://github.com/Organically-Distributed/keratin/commit/3cb121821e99aabdac35e73477b0b26a38789bd6).

@@ -35,9 +35,9 @@ warning. More examples are in the repository's `crates/client/examples`.
 ## Links
 
 - [Docs](https://fibril.sh/) and the [client guide](https://fibril.sh/clients/)
-- [Feature parity across the five clients](https://github.com/Axmouth/fibril/blob/main/clients/FEATURE_MATRIX.md)
+- [Feature parity across the five clients](https://github.com/Organically-Distributed/fibril/blob/main/clients/FEATURE_MATRIX.md)
 
 ## License
 
-MIT. See [AI_POLICY.md](https://github.com/Axmouth/fibril/blob/main/AI_POLICY.md)
+MIT. See [AI_POLICY.md](https://github.com/Organically-Distributed/fibril/blob/main/AI_POLICY.md)
 for the text and data mining reservation that comes with this package.

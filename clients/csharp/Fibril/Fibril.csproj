@@ -26,7 +26,7 @@
     <Description>.NET client for the Fibril message broker.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageProjectUrl>https://fibril.sh</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/Axmouth/fibril</RepositoryUrl>
+    <RepositoryUrl>https://github.com/Organically-Distributed/fibril</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageTags>fibril;message-broker;message-queue;pubsub;client</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>

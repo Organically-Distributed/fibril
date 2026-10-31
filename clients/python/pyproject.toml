@@ -31,8 +31,8 @@ dependencies = []
 [project.urls]
 Homepage = "https://fibril.sh"
 Documentation = "https://fibril.sh"
-Repository = "https://github.com/Axmouth/fibril"
-Issues = "https://github.com/Axmouth/fibril/issues"
+Repository = "https://github.com/Organically-Distributed/fibril"
+Issues = "https://github.com/Organically-Distributed/fibril/issues"
 
 [project.optional-dependencies]
 msgpack = ["msgpack>=1.0"]

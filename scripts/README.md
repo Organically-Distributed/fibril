@@ -53,6 +53,6 @@ Note: `bench-steady-c.sh` names the server data-dir knob `SERVER_DATA_DIR`;
 
 | Script | Does |
 |---|---|
-| `stroma-source.sh` | Strips the local `[patch."…/Axmouth/*.git"]` blocks (Keratin/Ganglion) so dependency lines stay git-sourced for CI, Docker, and release builds. |
+| `stroma-source.sh` | Strips the local `[patch."…/Organically-Distributed/*.git"]` blocks (Keratin/Ganglion) so dependency lines stay git-sourced for CI, Docker, and release builds. |
 | `ci-stroma-source.sh` | The CI/Docker variant: removes the local development patches and re-resolves the git deps (no `--locked`, since the committed lockfile is in local-patch form). |
 | `gen-compat-fixture.sh <tag>` | Generates a storage back-compat golden fixture: a data dir written by a released broker version (built from a worktree at `<tag>`), captured so a later broker proves in CI it still opens it. |

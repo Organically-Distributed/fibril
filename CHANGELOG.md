@@ -1624,7 +1624,7 @@ suite, a chaos/soak suite, and a real multi-node failover run.
 - Graceful shutdown flushes pending stream cursor commits, so a planned
   restart loses no committed consumer progress.
 
-[Unreleased]: https://github.com/axmouth/fibril/compare/v0.4.0...HEAD
-[0.4.0]: https://github.com/axmouth/fibril/releases/tag/v0.4.0
-[0.3.0]: https://github.com/axmouth/fibril/releases/tag/v0.3.0
-[0.2.0]: https://github.com/axmouth/fibril/releases/tag/v0.2.0
+[Unreleased]: https://github.com/Organically-Distributed/fibril/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Organically-Distributed/fibril/releases/tag/v0.4.0
+[0.3.0]: https://github.com/Organically-Distributed/fibril/releases/tag/v0.3.0
+[0.2.0]: https://github.com/Organically-Distributed/fibril/releases/tag/v0.2.0
