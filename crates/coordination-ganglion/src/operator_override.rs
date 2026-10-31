@@ -150,6 +150,9 @@ pub struct RecoveryAttention {
     pub resource: ResourceIdentity,
     pub reason: &'static str,
     pub action: &'static str,
+    /// Specifics such as the record counts and node a recovery waits for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 /// List pending recoveries the automatic driver will never finish and
@@ -166,16 +169,28 @@ pub fn recovery_attention(
         let Ok(pending) = serde_json::from_str::<PendingRecovery>(raw) else {
             continue;
         };
-        // The driver recovers streams and queues with an accepted history.
-        if pending.previous_activation.is_some()
-            || pending.previous.resource.namespace == crate::STREAM_NAMESPACE
-        {
+        if pending.previous.resource.namespace == crate::STREAM_NAMESPACE {
+            if let Some(detail) =
+                crate::stream_recovery::live_copies_lack_prefix(snapshot, &pending, &owner_serving)
+            {
+                out.push(RecoveryAttention {
+                    resource: pending.previous.resource.clone(),
+                    reason: "stream recovery waits for a copy that holds the confirmed prefix",
+                    action: "bring back a copy that holds it, usually the last promoted owner, or withdraw it and accept owner loss",
+                    detail: Some(detail),
+                });
+            }
+            continue;
+        }
+        // The driver recovers queues with an accepted history.
+        if pending.previous_activation.is_some() {
             continue;
         }
         out.push(RecoveryAttention {
             resource: pending.previous.resource.clone(),
             reason: "legacy queue pending recovery is unsupported for automatic resolution",
             action: "withdraw it once the owner serves again, or withdraw it and accept owner loss",
+            detail: None,
         });
     }
     for (resource, current) in &snapshot.assignments {
@@ -193,6 +208,7 @@ pub fn recovery_attention(
             resource: resource.clone(),
             reason: "only the missing owner holds every confirmed write, so the assignment waits for it",
             action: "bring the owner back, or accept owner loss to move it",
+            detail: None,
         });
     }
     out.sort_by(|a, b| {

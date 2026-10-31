@@ -5928,15 +5928,19 @@ impl Broker<StromaEngine> {
         next: &crate::coordination::StreamAssignment,
         member: bool,
     ) -> Result<stroma_core::StreamRejoin, BrokerError> {
+        // The owner of an epoch defines its history. The start recorded for
+        // its own takeover can lag its log when it came from a published tail,
+        // as after an accepted owner loss, and must not cut the owner.
+        let owns = self.ownership.replication_node_id() == Some(next.owner.as_str());
+        let starts: Vec<_> = next
+            .epoch_starts
+            .iter()
+            .filter(|start| !owns || start.epoch != next.epoch)
+            .copied()
+            .collect();
         let rejoin = self
             .engine
-            .rejoin_stream_at_epoch(
-                topic,
-                partition.id(),
-                next.epoch,
-                &next.epoch_starts,
-                member,
-            )
+            .rejoin_stream_at_epoch(topic, partition.id(), next.epoch, &starts, member)
             .await?;
         let cut = rejoin.records_dropped > 0 || rejoin.events_dropped > 0;
         if rejoin.closed_handle || cut {
@@ -6209,6 +6213,25 @@ impl Broker<StromaEngine> {
                             event_next_offset,
                             "promoted stream follower to owner at local tails"
                         );
+                        // Recovery never promotes below the confirmed prefix.
+                        // Only an accepted owner loss can, by the operator's
+                        // choice, so this warns instead of refusing.
+                        if let Some(prefix) = next
+                            .epoch_starts
+                            .iter()
+                            .filter(|start| start.epoch < next.epoch)
+                            .max_by_key(|start| start.epoch)
+                            .filter(|start| start.records > message_next_offset)
+                        {
+                            tracing::warn!(
+                                topic,
+                                partition = partition.id(),
+                                prefix_epoch = prefix.epoch,
+                                prefix_records = prefix.records,
+                                message_next_offset,
+                                "stream owner promoted below the confirmed prefix, records confirmed before that epoch may be missing"
+                            );
+                        }
                         Ok(BrokerAssignmentTransitionApply::Applied(transition.intent))
                     }
                     refused => {

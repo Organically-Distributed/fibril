@@ -240,6 +240,14 @@ pub(crate) fn retain_unproven_assignments(
             desired
                 .attributes
                 .remove(&crate::operator_override::accepted_owner_loss_key(resource));
+            // A returning stream copy still has to cut back to the new owner.
+            if resource.namespace == super::STREAM_NAMESPACE {
+                if let Some((key, value)) =
+                    crate::stream_recovery::accepted_loss_start(committed, proposed)?
+                {
+                    desired.attributes.insert(key, value);
+                }
+            }
             continue;
         }
         if enrolled && lost_followers_held(previous, proposed, old_writes, hold_lost_follower) {
@@ -519,6 +527,50 @@ mod tests {
         moved.assignments = snapshot(assignment("b", &["c"])).assignments;
         assert_eq!(retain_unproven_assignments(&accepted, &mut moved, &|_| false).unwrap(), 0);
         assert!(moved.attributes.is_empty());
+    }
+
+    #[test]
+    fn accepted_stream_owner_loss_records_where_the_new_owner_starts() {
+        let mut old = assignment("a", &["b"]);
+        old.resource.namespace = super::super::STREAM_NAMESPACE.into();
+        let mut accepted = snapshot(old.clone());
+        let marker = crate::operator_override::AcceptedOwnerLoss {
+            version: 1,
+            resource: old.resource.clone(),
+            owner: "a".into(),
+            epoch: old.epoch,
+        };
+        accepted.attributes.insert(
+            crate::operator_override::accepted_owner_loss_key(&old.resource),
+            serde_json::to_string(&marker).unwrap(),
+        );
+        let mut node = ganglion_core::NodeInfo::new("b", "127.0.0.1:1", None::<String>);
+        node.labels.insert(
+            "applied/q/0".into(),
+            crate::encode_stream_applied_tail(42, 3),
+        );
+        accepted.nodes.insert("b".into(), node);
+        let mut moved = old.clone();
+        moved.owner = "b".into();
+        moved.followers = vec![];
+        moved.epoch += 1;
+        let mut desired = accepted.clone();
+        desired
+            .assignments
+            .insert(old.resource.clone(), moved.clone());
+        assert_eq!(
+            retain_unproven_assignments(&accepted, &mut desired, &|_| false).unwrap(),
+            0
+        );
+        let starts =
+            crate::stream_recovery::recorded_epoch_starts(&desired, &old.resource).unwrap();
+        assert_eq!(starts.len(), 1);
+        assert_eq!(starts[0].start.epoch, moved.epoch);
+        assert_eq!(
+            (starts[0].start.records, starts[0].start.cursor_events),
+            (42, 3)
+        );
+        assert_eq!(starts[0].owner.as_deref(), Some("b"));
     }
 
     #[test]

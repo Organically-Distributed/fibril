@@ -4650,6 +4650,87 @@ async fn sealed_stream_follower_is_released_and_promoted() {
     broker.shutdown().await;
 }
 
+/// After an accepted owner loss the recorded start of the new epoch comes
+/// from a published tail and can lag the new owner's log. The owner never
+/// cuts itself at its own start, while a follower at an older epoch does.
+#[tokio::test]
+async fn stream_owner_is_never_cut_at_its_own_epoch_start() {
+    use fibril_broker::stream::StreamDurability;
+
+    #[derive(Debug)]
+    struct Node(&'static str);
+    impl fibril_broker::broker::QueueOwnership for Node {
+        fn owns_queue(&self, _: &str, _: Partition, _: Option<&str>) -> bool {
+            true
+        }
+        fn replication_node_id(&self) -> Option<&str> {
+            Some(self.0)
+        }
+    }
+    let headers = || MessageHeaders {
+        published: unix_millis(),
+        publish_received: unix_millis(),
+        content_type: None,
+        extra: Default::default(),
+    };
+    let stream = StreamIdentity::new("events", Partition::new(0));
+    let mut lagging = StreamAssignment::new(stream.clone(), "b", vec!["a".into()], 2);
+    lagging.epoch_starts = vec![fibril_broker::coordination::StreamEpochStart {
+        epoch: 2,
+        records: 1,
+        cursor_events: 0,
+    }]
+    .into();
+    for (node, expected_tail) in [("b", 3), ("a", 1)] {
+        let (broker, _dir) = open_test_broker_with_ownership(Arc::new(Node(node))).await;
+        let channel = broker
+            .get_or_open_stream("events", 0, StreamDurability::Durable, None)
+            .await
+            .unwrap();
+        let first = StreamAssignment::new(stream.clone(), node, vec![], 1);
+        broker
+            .apply_stream_assignment_transition(&LocalStreamAssignmentTransition {
+                stream: stream.clone(),
+                previous_role: None,
+                next_role: Some(LocalAssignmentRole::Owner),
+                previous: None,
+                next: Some(first.clone()),
+                intent: LocalAssignmentIntent::BecomeOwner,
+            })
+            .await
+            .unwrap();
+        for payload in ["x", "y", "z"] {
+            channel.publish(headers(), payload.into()).await.unwrap();
+        }
+        let owner = node == "b";
+        broker
+            .apply_stream_assignment_transition(&LocalStreamAssignmentTransition {
+                stream: stream.clone(),
+                previous_role: Some(LocalAssignmentRole::Owner),
+                next_role: Some(if owner {
+                    LocalAssignmentRole::Owner
+                } else {
+                    LocalAssignmentRole::Follower
+                }),
+                previous: Some(first),
+                next: Some(lagging.clone()),
+                intent: if owner {
+                    LocalAssignmentIntent::RefreshOwner
+                } else {
+                    LocalAssignmentIntent::DemoteOwnerToFollower
+                },
+            })
+            .await
+            .unwrap();
+        let reopened = broker
+            .get_or_open_stream("events", 0, StreamDurability::Durable, None)
+            .await
+            .unwrap();
+        assert_eq!(reopened.head_tail().await.unwrap(), (0, expected_tail), "{node}");
+        broker.shutdown().await;
+    }
+}
+
 /// A durable stream with replicas confirms a publish only after the replication
 /// durability policy is met: the tier-derived policy (durable + 1 follower =>
 /// ReplicaDurable nodes 2) is cached when the owner role is applied, so the

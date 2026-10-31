@@ -24,11 +24,22 @@ pub fn epoch_starts_key(resource: &ResourceIdentity) -> String {
     )
 }
 
+/// One recorded owner history start and the node that took over there. The
+/// start's record tail is the prefix holding every record confirmed under
+/// the assignment before it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RecordedEpochStart {
+    #[serde(flatten)]
+    pub start: StreamEpochStart,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+}
+
 /// Every recorded start of an owner history for this stream, oldest first.
-pub fn epoch_starts(
+pub fn recorded_epoch_starts(
     snapshot: &CoordinationSnapshot,
     resource: &ResourceIdentity,
-) -> Result<Vec<StreamEpochStart>, String> {
+) -> Result<Vec<RecordedEpochStart>, String> {
     snapshot
         .attributes
         .get(&epoch_starts_key(resource))
@@ -37,6 +48,143 @@ pub fn epoch_starts(
         })
         .transpose()
         .map(Option::unwrap_or_default)
+}
+
+/// The recorded starts without their owners, as brokers use them.
+pub fn epoch_starts(
+    snapshot: &CoordinationSnapshot,
+    resource: &ResourceIdentity,
+) -> Result<Vec<StreamEpochStart>, String> {
+    Ok(recorded_epoch_starts(snapshot, resource)?
+        .into_iter()
+        .map(|recorded| recorded.start)
+        .collect())
+}
+
+/// The latest start before `epoch`. Every record confirmed before that start
+/// lies below its record tail, and only the copy promoted there was sure to
+/// hold them until its followers caught up.
+pub fn confirmed_prefix(starts: &[RecordedEpochStart], epoch: u64) -> Option<&RecordedEpochStart> {
+    starts
+        .iter()
+        .filter(|recorded| recorded.start.epoch < epoch)
+        .max_by_key(|recorded| recorded.start.epoch)
+}
+
+/// Why a recovery must wait for a copy holding the confirmed prefix, if it
+/// must.
+pub fn prefix_wait(prefix: &RecordedEpochStart, furthest: u64) -> Option<String> {
+    (furthest < prefix.start.records).then(|| {
+        format!(
+            "waiting for a copy that holds the confirmed prefix of {} records from epoch {}{}, the furthest copy holds {furthest}",
+            prefix.start.records,
+            prefix.start.epoch,
+            prefix
+                .owner
+                .as_ref()
+                .map(|owner| format!(" (owner {owner})"))
+                .unwrap_or_default(),
+        )
+    })
+}
+
+/// Record and cursor event tails a stream copy last published in its
+/// heartbeat. Advisory: a label can lag the copy.
+pub(crate) fn published_tails(
+    snapshot: &CoordinationSnapshot,
+    resource: &ResourceIdentity,
+    node: &str,
+) -> Option<(u64, u64)> {
+    let label = crate::applied_tail_label(&fibril_broker::coordination::QueueIdentity::new(
+        resource.name.clone(),
+        fibril_broker::Partition::new(u32::try_from(resource.partition).ok()?),
+        None,
+    ));
+    snapshot
+        .nodes
+        .get(node)?
+        .labels
+        .get(&label)
+        .and_then(|raw| crate::parse_applied_tail(raw, true))
+}
+
+/// Why a stream recovery is stuck on the confirmed prefix, judged from the
+/// tails live copies published. `None` when some live copy may hold it or a
+/// live copy published nothing, since the driver is then expected to finish.
+pub(crate) fn live_copies_lack_prefix(
+    snapshot: &CoordinationSnapshot,
+    pending: &PendingRecovery,
+    serving: &dyn Fn(&str) -> bool,
+) -> Option<String> {
+    let starts = recorded_epoch_starts(snapshot, &pending.previous.resource).ok()?;
+    let prefix = confirmed_prefix(&starts, pending.proposed.epoch)?;
+    let mut furthest = 0;
+    for node in std::iter::once(&pending.previous.owner).chain(pending.previous.followers.iter()) {
+        if serving(node) {
+            furthest = furthest.max(published_tails(snapshot, &pending.previous.resource, node)?.0);
+        }
+    }
+    prefix_wait(prefix, furthest)
+}
+
+/// The start to record when an operator moves a stream off a lost owner:
+/// the new owner's tails as it last published them, at the new epoch. They
+/// can only lag what it holds when it takes over, and cutting a returning
+/// copy lower than needed only makes it fetch shared records again. Returns
+/// the attribute to write, or `None` when the new owner published nothing.
+pub(crate) fn accepted_loss_start(
+    committed: &CoordinationSnapshot,
+    proposed: &PartitionAssignment,
+) -> Result<Option<(String, String)>, String> {
+    let Some((records, cursor_events)) =
+        published_tails(committed, &proposed.resource, &proposed.owner)
+    else {
+        tracing::warn!(
+            topic = proposed.resource.name,
+            partition = proposed.resource.partition,
+            owner = proposed.owner,
+            "new stream owner published no tails, a returning copy is not cut back"
+        );
+        return Ok(None);
+    };
+    let mut updated = CoordinationSnapshot::default();
+    if let Some(raw) = committed
+        .attributes
+        .get(&epoch_starts_key(&proposed.resource))
+    {
+        updated
+            .attributes
+            .insert(epoch_starts_key(&proposed.resource), raw.clone());
+    }
+    let start = RecordedEpochStart {
+        start: StreamEpochStart {
+            epoch: proposed.epoch,
+            records,
+            cursor_events,
+        },
+        owner: Some(proposed.owner.clone()),
+    };
+    record_epoch_start(&mut updated, &proposed.resource, start)?;
+    let key = epoch_starts_key(&proposed.resource);
+    let value = updated.attributes.remove(&key).expect("start recorded");
+    Ok(Some((key, value)))
+}
+
+/// Append `start` to the stream's recorded starts in `snapshot`, replacing
+/// any at the same or a later epoch.
+pub(crate) fn record_epoch_start(
+    snapshot: &mut CoordinationSnapshot,
+    resource: &ResourceIdentity,
+    start: RecordedEpochStart,
+) -> Result<(), String> {
+    let mut starts = recorded_epoch_starts(snapshot, resource)?;
+    starts.retain(|known| known.start.epoch < start.start.epoch);
+    starts.push(start);
+    snapshot.attributes.insert(
+        epoch_starts_key(resource),
+        serde_json::to_string(&starts).map_err(|e| e.to_string())?,
+    );
+    Ok(())
 }
 
 /// Drop history starts of streams that no longer have an assignment. A
@@ -116,11 +264,14 @@ pub fn choose_owner(copies: &[SealedStreamCopy]) -> Option<&SealedStreamCopy> {
 }
 
 /// The assignment that ends `pending` from `copies`, and the start of its
-/// owner history. Fails while fewer than the threshold of copies answered.
+/// owner history. Fails while fewer than the threshold of copies answered,
+/// and while even the furthest copy lacks the confirmed prefix recorded at
+/// the last promotion in `starts`.
 pub fn recovery_assignment(
     pending: &PendingRecovery,
     copies: &[SealedStreamCopy],
-) -> Result<(PartitionAssignment, StreamEpochStart), String> {
+    starts: &[RecordedEpochStart],
+) -> Result<(PartitionAssignment, RecordedEpochStart), String> {
     let previous = &pending.previous;
     if previous.resource.namespace != crate::STREAM_NAMESPACE {
         return Err("stream recovery applies to streams only".into());
@@ -148,6 +299,13 @@ pub fn recovery_assignment(
         ));
     }
     let owner = choose_owner(copies).expect("at least one copy");
+    // The intersection argument covers records confirmed under the previous
+    // assignment only. Older ones are known to be below the last start.
+    if let Some(wait) = confirmed_prefix(starts, pending.proposed.epoch)
+        .and_then(|prefix| prefix_wait(prefix, owner.records))
+    {
+        return Err(wait);
+    }
     // Sealed copies keep their previous order. Members the proposal added,
     // which held no copy before, join as followers. Old copies that did not
     // answer are left out and placement can add them back later.
@@ -171,10 +329,13 @@ pub fn recovery_assignment(
     crate::promotion::write_requirement(&assignment)?;
     Ok((
         assignment,
-        StreamEpochStart {
-            epoch: pending.proposed.epoch,
-            records: owner.records,
-            cursor_events: owner.cursor_events,
+        RecordedEpochStart {
+            start: StreamEpochStart {
+                epoch: pending.proposed.epoch,
+                records: owner.records,
+                cursor_events: owner.cursor_events,
+            },
+            owner: Some(owner.node.clone()),
         },
     ))
 }
@@ -200,20 +361,22 @@ impl GanglionCoordination {
             {
                 return Err(error("stream recovery request changed before commit"));
             }
-            let (assignment, start) = recovery_assignment(pending, copies).map_err(error)?;
-            let mut starts = epoch_starts(&snapshot, &assignment.resource).map_err(error)?;
-            starts.retain(|known| known.epoch < start.epoch);
-            starts.push(start);
+            // Starts come from the same snapshot the guarded write checks, so
+            // a stale view cannot skip the confirmed prefix.
+            let starts =
+                recorded_epoch_starts(&snapshot, &pending.previous.resource).map_err(error)?;
+            let (assignment, start) =
+                recovery_assignment(pending, copies, &starts).map_err(error)?;
+            let mut updated = snapshot.clone();
+            record_epoch_start(&mut updated, &assignment.resource, start).map_err(error)?;
+            let starts_key = epoch_starts_key(&assignment.resource);
             let attributes = BTreeMap::from([
                 (key.clone(), None),
                 (
                     crate::recovery_candidate::key(pending).map_err(error)?,
                     None,
                 ),
-                (
-                    epoch_starts_key(&assignment.resource),
-                    Some(serde_json::to_string(&starts).map_err(error)?),
-                ),
+                (starts_key.clone(), updated.attributes.remove(&starts_key)),
             ]);
             match self
                 .forward_command(MetadataRaftCommand::UpdatePartitionGuarded {
@@ -314,23 +477,23 @@ mod tests {
         let previous = stream("a", &["b", "c"], every);
         let p = pending(previous.clone(), stream("b", &["c"], every));
         assert_eq!(p.required_old_witnesses, 1);
-        let error = recovery_assignment(&p, &[]).unwrap_err();
+        let error = recovery_assignment(&p, &[], &[]).unwrap_err();
         assert!(error.contains("0 of 1"), "{error}");
 
         let (assignment, start) =
-            recovery_assignment(&p, &[copy("b", 9, 1), copy("c", 11, 0)]).unwrap();
+            recovery_assignment(&p, &[copy("b", 9, 1), copy("c", 11, 0)], &[]).unwrap();
         assert_eq!(assignment.owner, "c");
         assert_eq!(assignment.followers, vec!["b"]);
         assert_eq!(assignment.epoch, previous.epoch + 1);
         assert_eq!(
-            start,
+            start.start,
             StreamEpochStart {
                 epoch: previous.epoch + 1,
                 records: 11,
                 cursor_events: 0
             }
         );
-        let (alone, _) = recovery_assignment(&p, &[copy("c", 5, 5)]).unwrap();
+        let (alone, _) = recovery_assignment(&p, &[copy("c", 5, 5)], &[]).unwrap();
         assert_eq!(alone.owner, "c");
         assert!(alone.followers.is_empty(), "b did not answer");
     }
@@ -342,7 +505,8 @@ mod tests {
             stream("a", &["b", "c"], every),
             stream("a", &["b", "d"], every),
         );
-        let (assignment, _) = recovery_assignment(&p, &[copy("a", 7, 2), copy("b", 7, 2)]).unwrap();
+        let (assignment, _) =
+            recovery_assignment(&p, &[copy("a", 7, 2), copy("b", 7, 2)], &[]).unwrap();
         assert_eq!(assignment.owner, "a");
         assert_eq!(assignment.followers, vec!["b", "d"]);
 
@@ -350,11 +514,11 @@ mod tests {
             vec![copy("a", 1, 0), copy("x", 9, 0)],
             vec![copy("a", 1, 0), copy("a", 1, 0)],
         ] {
-            assert!(recovery_assignment(&p, &bad).is_err());
+            assert!(recovery_assignment(&p, &bad, &[]).is_err());
         }
         let mut queue = p.clone();
         queue.previous.resource.namespace = crate::QUEUE_NAMESPACE.into();
-        assert!(recovery_assignment(&queue, &[copy("a", 1, 0), copy("b", 1, 0)]).is_err());
+        assert!(recovery_assignment(&queue, &[copy("a", 1, 0), copy("b", 1, 0)], &[]).is_err());
     }
 
     #[test]
@@ -399,16 +563,139 @@ mod tests {
         let previous = stream("a", &["b", "c"], majority);
         let p = pending(previous.clone(), stream("b", &["c"], majority));
         assert_eq!(p.required_old_witnesses, 2);
-        let error = recovery_assignment(&p, &[copy("b", 9, 1)]).unwrap_err();
+        let error = recovery_assignment(&p, &[copy("b", 9, 1)], &[]).unwrap_err();
         assert!(error.contains("1 of 2"), "{error}");
 
         let (assignment, start) =
-            recovery_assignment(&p, &[copy("b", 9, 1), copy("c", 11, 0)]).unwrap();
+            recovery_assignment(&p, &[copy("b", 9, 1), copy("c", 11, 0)], &[]).unwrap();
         assert_eq!(assignment.owner, "c");
         assert_eq!(assignment.followers, vec!["b"]);
         assert_eq!(assignment.durability, majority);
-        assert_eq!(start.records, 11);
+        assert_eq!(start.start.records, 11);
+        assert_eq!(start.owner.as_deref(), Some("c"));
         assert_eq!(crate::promotion::write_requirement(&assignment).unwrap(), 2);
+    }
+
+    fn recorded(epoch: u64, records: u64, owner: &str) -> RecordedEpochStart {
+        RecordedEpochStart {
+            start: StreamEpochStart {
+                epoch,
+                records,
+                cursor_events: 0,
+            },
+            owner: Some(owner.into()),
+        }
+    }
+
+    /// The owner promoted at the last failover is lost before its followers
+    /// held everything confirmed before it took over. The next recovery waits
+    /// for a copy at or past that start instead of promoting a shorter one.
+    #[test]
+    fn a_second_owner_loss_waits_for_the_confirmed_prefix() {
+        let majority = ReplicationDurabilityPolicy::MajorityDurable;
+        // b took over at epoch 4 holding 100 records. c and d lag behind it.
+        let previous = stream("b", &["c", "d"], majority);
+        let p = pending(previous, stream("c", &["d"], majority));
+        let starts = [recorded(2, 40, "a"), recorded(4, 100, "b")];
+        let error =
+            recovery_assignment(&p, &[copy("c", 90, 3), copy("d", 99, 1)], &starts).unwrap_err();
+        assert!(
+            error.contains("confirmed prefix of 100 records from epoch 4"),
+            "{error}"
+        );
+        assert!(error.contains("owner b"), "{error}");
+
+        // Once a copy at the start answers, it is promoted.
+        let (assignment, start) =
+            recovery_assignment(&p, &[copy("c", 90, 3), copy("d", 100, 1)], &starts).unwrap();
+        assert_eq!(assignment.owner, "d");
+        assert_eq!(start.start.records, 100);
+        let (assignment, _) =
+            recovery_assignment(&p, &[copy("c", 130, 3), copy("d", 99, 1)], &starts).unwrap();
+        assert_eq!(assignment.owner, "c");
+        // A start at or after the recovery epoch is not a prefix of it.
+        let later = [recorded(p.proposed.epoch, 500, "x")];
+        assert!(recovery_assignment(&p, &[copy("c", 1, 0), copy("d", 2, 0)], &later).is_ok());
+    }
+
+    #[test]
+    fn recorded_starts_read_without_an_owner_and_replace_later_epochs() {
+        let resource = stream("a", &[], ReplicationDurabilityPolicy::LocalDurable).resource;
+        let mut snapshot = CoordinationSnapshot::default();
+        snapshot.attributes.insert(
+            epoch_starts_key(&resource),
+            r#"[{"epoch":2,"records":7,"cursor_events":1}]"#.into(),
+        );
+        assert_eq!(
+            recorded_epoch_starts(&snapshot, &resource).unwrap()[0].owner,
+            None
+        );
+        record_epoch_start(&mut snapshot, &resource, recorded(5, 9, "b")).unwrap();
+        record_epoch_start(&mut snapshot, &resource, recorded(4, 8, "c")).unwrap();
+        let starts = epoch_starts(&snapshot, &resource).unwrap();
+        assert_eq!(
+            starts.iter().map(|s| s.epoch).collect::<Vec<_>>(),
+            vec![2, 4]
+        );
+    }
+
+    fn with_tail(snapshot: &mut CoordinationSnapshot, node: &str, records: u64) {
+        let mut info = ganglion_core::NodeInfo::new(node, "127.0.0.1:1", None::<String>);
+        info.labels.insert(
+            crate::applied_tail_label(&fibril_broker::coordination::QueueIdentity::new(
+                "s",
+                fibril_broker::Partition::new(0),
+                None,
+            )),
+            crate::encode_stream_applied_tail(records, 0),
+        );
+        snapshot.nodes.insert(node.into(), info);
+    }
+
+    #[test]
+    fn attention_names_the_owner_holding_the_confirmed_prefix() {
+        let majority = ReplicationDurabilityPolicy::MajorityDurable;
+        let previous = stream("b", &["c", "d"], majority);
+        let p = pending(previous.clone(), stream("c", &["d"], majority));
+        let mut snapshot = CoordinationSnapshot::default();
+        snapshot
+            .assignments
+            .insert(previous.resource.clone(), previous.clone());
+        snapshot.attributes.insert(
+            crate::promotion::pending_recovery_key(&previous.resource),
+            serde_json::to_string(&p).unwrap(),
+        );
+        record_epoch_start(&mut snapshot, &previous.resource, recorded(4, 100, "b")).unwrap();
+        let live = |node: &str| node != "b";
+        // A live copy that published nothing may still hold the prefix.
+        with_tail(&mut snapshot, "c", 90);
+        assert!(crate::operator_override::recovery_attention(&snapshot, live).is_empty());
+        with_tail(&mut snapshot, "d", 95);
+        let attention = crate::operator_override::recovery_attention(&snapshot, live);
+        assert_eq!(attention.len(), 1, "{attention:?}");
+        assert!(attention[0].reason.contains("confirmed prefix"));
+        let detail = attention[0].detail.as_deref().unwrap();
+        assert!(
+            detail.contains("owner b") && detail.contains("holds 95"),
+            "{detail}"
+        );
+        with_tail(&mut snapshot, "d", 100);
+        assert!(crate::operator_override::recovery_attention(&snapshot, live).is_empty());
+    }
+
+    #[test]
+    fn accepted_owner_loss_records_the_new_owners_published_tails() {
+        let mut moved = stream("c", &[], ReplicationDurabilityPolicy::LocalDurable);
+        moved.epoch = 7;
+        let mut committed = CoordinationSnapshot::default();
+        record_epoch_start(&mut committed, &moved.resource, recorded(4, 100, "b")).unwrap();
+        assert_eq!(accepted_loss_start(&committed, &moved).unwrap(), None);
+        with_tail(&mut committed, "c", 120);
+        let (key, value) = accepted_loss_start(&committed, &moved).unwrap().unwrap();
+        committed.attributes.insert(key, value);
+        let starts = recorded_epoch_starts(&committed, &moved.resource).unwrap();
+        assert_eq!(starts.len(), 2);
+        assert_eq!(starts[1], recorded(7, 120, "c"));
     }
 
     #[test]
@@ -439,6 +726,6 @@ mod tests {
         let every = ReplicationDurabilityPolicy::LocalDurable;
         let mut p = pending(stream("a", &["b", "c"], every), stream("b", &["c"], every));
         p.required_old_witnesses = 2;
-        assert!(recovery_assignment(&p, &[copy("b", 1, 0), copy("c", 1, 0)]).is_err());
+        assert!(recovery_assignment(&p, &[copy("b", 1, 0), copy("c", 1, 0)], &[]).is_err());
     }
 }
