@@ -166,18 +166,15 @@ pub fn recovery_attention(
         let Ok(pending) = serde_json::from_str::<PendingRecovery>(raw) else {
             continue;
         };
-        // The driver only recovers queues with an accepted history.
-        if pending.previous_activation.is_some() {
+        // The driver recovers streams and queues with an accepted history.
+        if pending.previous_activation.is_some()
+            || pending.previous.resource.namespace == crate::STREAM_NAMESPACE
+        {
             continue;
         }
-        let stream = pending.previous.resource.namespace == crate::STREAM_NAMESPACE;
         out.push(RecoveryAttention {
             resource: pending.previous.resource.clone(),
-            reason: if stream {
-                "stream pending recovery is unsupported for automatic resolution"
-            } else {
-                "legacy queue pending recovery is unsupported for automatic resolution"
-            },
+            reason: "legacy queue pending recovery is unsupported for automatic resolution",
             action: "withdraw it once the owner serves again, or withdraw it and accept owner loss",
         });
     }

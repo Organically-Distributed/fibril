@@ -40,6 +40,7 @@ mod recovery_candidate;
 pub mod queue_learner;
 pub mod queue_reseed;
 pub mod queue_checkpoint;
+pub mod stream_recovery;
 
 /// Namespace tag used for fibril queues inside ganglion resource identities.
 const QUEUE_NAMESPACE: &str = "fibril/queue";
@@ -6907,11 +6908,11 @@ mod tests {
         provider.consensus_node().shutdown().await.unwrap();
     }
 
-    /// A replicated stream ownership change parks forever because automatic
-    /// recovery does not handle streams. The controller flags it, an operator
-    /// can withdraw it and then accept losing the old owner.
+    /// A replicated stream ownership change waits for automatic recovery,
+    /// which is not flagged for attention. An operator can still withdraw it
+    /// and then accept losing the old owner.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn operator_resolves_a_stuck_stream_recovery() {
+    async fn operator_can_take_over_a_stream_recovery() {
         let router = InProcessRouter::new();
         let raft_node = RaftMetadataNode::start(1, default_raft_config().unwrap(), &router)
             .await
@@ -6969,8 +6970,7 @@ mod tests {
         let snapshot = provider.consensus_node().committed_snapshot();
         assert!(snapshot.attributes.contains_key(&promotion::pending_recovery_key(&resource)));
         let attention = operator_override::recovery_attention(&snapshot, |n| survivors.contains_key(n));
-        assert_eq!(attention.len(), 1);
-        assert!(attention[0].reason.contains("unsupported for automatic resolution"));
+        assert!(attention.is_empty(), "{attention:?}");
 
         // A pending request blocks accepting loss until it is withdrawn.
         assert!(provider.accept_owner_loss(&resource).await.is_err());

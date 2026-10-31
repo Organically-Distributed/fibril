@@ -1,5 +1,6 @@
-//! Bounded creation and recovery for enrolled queue histories. Legacy origins,
-//! streams and crossed tails remain fenced with an actionable error.
+//! Bounded creation and recovery for enrolled queue histories and replicated
+//! streams. Legacy queue origins and crossed tails remain fenced with an
+//! actionable error.
 use fibril_broker::{
     broker::{Broker, QueueOwnership},
     queue_engine::StromaEngine,
@@ -773,6 +774,71 @@ async fn read_source_page(
     })
 }
 
+/// Fail a replicated stream over from sealed copies of its previous
+/// assignment. Runs on the coordination leader. Every surviving copy is sealed
+/// at the next epoch, so its tail stops moving, and the commit needs at least
+/// the threshold of them. Copies that do not answer in time are left out.
+pub async fn recover_stream_once(
+    provider: &GanglionCoordination,
+    config: &ProtocolOwnerPeerResolverConfig,
+    pending: &PendingRecovery,
+) -> Result<(), String> {
+    use fibril_coordination_ganglion::stream_recovery::{SealedStreamCopy, seal_threshold};
+    if !provider.is_leader().await {
+        return Err("only the coordination leader drives stream recovery".into());
+    }
+    let required = seal_threshold(&pending.previous)?;
+    let seal_command = pending.seal_command()?;
+    let nodes: Vec<&String> = std::iter::once(&pending.previous.owner)
+        .chain(pending.previous.followers.iter())
+        .collect();
+    let replies = futures::future::join_all(nodes.iter().map(|node| {
+        let seal_command = &seal_command;
+        async move {
+            (
+                *node,
+                request_recovery_seal(config, node, seal_command, RPC).await,
+            )
+        }
+    }))
+    .await;
+    let mut copies = vec![];
+    let mut errors = vec![];
+    for (node, reply) in replies {
+        match reply.map_err(err).and_then(|seal| {
+            if &seal.node_id != node {
+                return Err("seal answered for another node".to_string());
+            }
+            SealedStreamCopy::from_seal(pending, &seal)
+        }) {
+            Ok(copy) => copies.push(copy),
+            Err(error) => errors.push(format!("{node}: {error}")),
+        }
+    }
+    if copies.len() < required {
+        return Err(format!(
+            "stream recovery has {} of {required} required sealed copies: {}",
+            copies.len(),
+            errors.join("; ")
+        ));
+    }
+    let assignment = provider
+        .commit_stream_recovery(pending, &copies)
+        .await
+        .map_err(err)?;
+    tracing::info!(
+        topic = pending.previous.resource.name,
+        partition = pending.previous.resource.partition,
+        epoch = assignment.epoch,
+        owner = assignment.owner,
+        followers = ?assignment.followers,
+        sealed = copies.len(),
+        required,
+        "stream failed over to the furthest sealed copy"
+    );
+    Ok(())
+}
+
 /// Start bounded recovery and exact local readmission for enrolled histories.
 pub fn spawn(
     provider: Arc<GanglionCoordination>,
@@ -794,6 +860,11 @@ pub fn spawn(
         let mut jobs: tokio::task::JoinSet<(PendingRecovery, Result<(), String>)> =
             tokio::task::JoinSet::new();
         let mut running: Option<(PendingRecovery, tokio::task::AbortHandle)> = None;
+        // Stream failover only seals and commits, so it runs beside a long
+        // queue recovery instead of behind it. One at a time, since a broker
+        // takes one recovery seal at a time.
+        let mut stream_jobs: tokio::task::JoinSet<(PendingRecovery, Result<(), String>)> =
+            tokio::task::JoinSet::new();
         let mut cleanup_state = Some(fibril_broker::recovery::cache::RecoveryCacheSweep::default());
         let mut cleanup_job: Option<
             tokio::task::JoinHandle<(
@@ -808,7 +879,34 @@ pub fn spawn(
             let state = wake.next().await;
             if broker.is_shutting_down() {
                 jobs.abort_all();
+                stream_jobs.abort_all();
                 break;
+            }
+            while let Some(outcome) = stream_jobs.try_join_next() {
+                let Ok((pending, outcome)) = outcome else {
+                    continue;
+                };
+                let id = pending.transition_digest().unwrap_or_default();
+                match outcome {
+                    Ok(()) => {
+                        failures.remove(&id);
+                    }
+                    Err(error) => {
+                        let previous = failures.get(&id);
+                        let delay = previous.map_or(1, |(_, delay, _)| (delay * 2).min(30));
+                        if previous.is_none_or(|(_, _, old)| old != &error) {
+                            tracing::warn!(topic=pending.proposed.resource.name,partition=pending.proposed.resource.partition,retry_seconds=delay,%error,"stream waits for failover");
+                        }
+                        failures.insert(
+                            id,
+                            (
+                                tokio::time::Instant::now() + Duration::from_secs(delay),
+                                delay,
+                                error,
+                            ),
+                        );
+                    }
+                }
             }
             while let Some(outcome) = jobs.try_join_next() {
                 match outcome {
@@ -1050,6 +1148,35 @@ pub fn spawn(
                 if !still_owned {
                     task.abort();
                 }
+            }
+            let leader = provider.is_leader().await;
+            for pending in requests
+                .iter()
+                .filter(|p| p.previous.resource.namespace == "fibril/stream")
+            {
+                let Ok(id) = pending.transition_digest() else {
+                    continue;
+                };
+                if !leader
+                    || !stream_jobs.is_empty()
+                    || failures
+                        .get(&id)
+                        .is_some_and(|(at, _, _)| *at > tokio::time::Instant::now())
+                {
+                    continue;
+                }
+                let work_provider = provider.clone();
+                let work_config = config.clone();
+                let pending = pending.clone();
+                stream_jobs.spawn(async move {
+                    let outcome = tokio::time::timeout(
+                        Duration::from_secs(60),
+                        recover_stream_once(&work_provider, &work_config, &pending),
+                    )
+                    .await
+                    .unwrap_or_else(|_| Err("stream recovery exceeded its budget; retry".into()));
+                    (pending, outcome)
+                });
             }
             for pending in requests {
                 // Let the original driver report malformed/stale authority via

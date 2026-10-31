@@ -4,6 +4,7 @@ use std::{
 };
 
 use crate::storage::{Group, Partition, Topic};
+pub use stroma_core::StreamEpochStart;
 use tokio::sync::watch;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
