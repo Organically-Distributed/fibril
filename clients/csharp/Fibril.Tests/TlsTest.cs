@@ -116,17 +116,20 @@ public class TlsTest
     // file) and the server certificate with its key (for the broker to present).
     private static (X509Certificate2 Ca, X509Certificate2 Server) CaAndServerCert()
     {
+        // One timestamp for both certificates. Reading the clock twice could put the
+        // server notAfter a moment past the CA notAfter, which CertificateRequest rejects.
+        var now = DateTimeOffset.UtcNow;
         using var caRsa = RSA.Create(2048);
         var caReq = new CertificateRequest("CN=fibril-test-ca", caRsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         caReq.CertificateExtensions.Add(new X509BasicConstraintsExtension(certificateAuthority: true, hasPathLengthConstraint: false, pathLengthConstraint: 0, critical: true));
-        using var ca = caReq.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+        using var ca = caReq.CreateSelfSigned(now.AddDays(-1), now.AddDays(1));
 
         using var srvRsa = RSA.Create(2048);
         var srvReq = new CertificateRequest("CN=localhost", srvRsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         var san = new SubjectAlternativeNameBuilder();
         san.AddDnsName("localhost");
         srvReq.CertificateExtensions.Add(san.Build());
-        using var srvCert = srvReq.Create(ca, DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1), new byte[] { 1, 2, 3, 4 });
+        using var srvCert = srvReq.Create(ca, now.AddDays(-1), now.AddDays(1), new byte[] { 1, 2, 3, 4 });
         using var withKey = srvCert.CopyWithPrivateKey(srvRsa);
         // Re-import through PKCS#12 so the private key is usable server-side on any platform.
         var server = X509CertificateLoader.LoadPkcs12(withKey.Export(X509ContentType.Pfx), null);
