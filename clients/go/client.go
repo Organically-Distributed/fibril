@@ -687,6 +687,9 @@ func (c *Client) subscribe(ctx context.Context, req Subscribe, supervised bool) 
 
 // SubscribeStream subscribes to one partition of a Plexus (fan-out stream),
 // routed to its owner and following owner redirects. Streams have no group.
+// The broker keeps one stream subscription per partition on a connection, and a
+// second subscribe to the same partition replaces the first, which then gets no
+// more records. Use a separate Client for each independent subscriber.
 func (c *Client) SubscribeStream(ctx context.Context, req SubscribeStream) (*Subscription, error) {
 	for attempt := 0; attempt <= c.opts.MaxRedirects; attempt++ {
 		eng, err := c.engineFor(ctx, c.topo.ownerOf(req.Topic, req.Partition, nil))

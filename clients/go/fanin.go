@@ -242,7 +242,9 @@ type StreamSubscribeOptions struct {
 // SubscribeStreamTopic subscribes to every partition of a Plexus stream and fans
 // the records into one channel, supervising each partition and picking up
 // partitions added by a live repartition grow. Every consumer sees every record
-// (fan-out); the client reads all partitions and fans them in.
+// (fan-out); the client reads all partitions and fans them in. A Client holds
+// one stream subscription per partition (see SubscribeStream), so independent
+// subscribers to the same stream each need their own Client.
 func (c *Client) SubscribeStreamTopic(ctx context.Context, topic string, opts StreamSubscribeOptions) (*FanIn, error) {
 	return c.newFanIn(ctx, topic, nil, opts.Prefetch, func(ctx context.Context, p uint32) (*SupervisedSubscription, error) {
 		return c.SuperviseSubscribeStream(ctx, SubscribeStream{

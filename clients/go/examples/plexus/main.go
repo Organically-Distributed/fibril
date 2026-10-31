@@ -22,11 +22,19 @@ func main() {
 		_, err := c.DeclarePlexus(context.Background(), fibril.NewStreamConfig(topic).PartitionCount(1).Durability(fibril.StreamDurable))
 		exharness.Check(err == nil, "declare plexus")
 
+		// Each subscriber has its own client. The broker keeps one stream
+		// subscription per partition on a connection, so a second subscribe on
+		// the same client would replace the first.
+		consumerA := exharness.Connect("example-plexus-a")
+		defer consumerA.Shutdown()
+		consumerB := exharness.Connect("example-plexus-b")
+		defer consumerB.Shutdown()
+
 		opts := fibril.StreamSubscribeOptions{Start: fibril.StreamStart{Kind: fibril.StreamLatest}, Prefetch: 16, AutoAck: true}
-		subA, err := c.SubscribeStreamTopic(context.Background(), topic, opts)
+		subA, err := consumerA.SubscribeStreamTopic(context.Background(), topic, opts)
 		exharness.Check(err == nil, "subscribe A")
 		defer subA.Close()
-		subB, err := c.SubscribeStreamTopic(context.Background(), topic, opts)
+		subB, err := consumerB.SubscribeStreamTopic(context.Background(), topic, opts)
 		exharness.Check(err == nil, "subscribe B")
 		defer subB.Close()
 
