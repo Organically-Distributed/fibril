@@ -5952,6 +5952,40 @@ impl Broker<StromaEngine> {
         Ok(rejoin)
     }
 
+    /// Start or keep this node's stream follower worker. A fresh worker
+    /// resumes at the local tails, which a rejoin already cut back to the
+    /// owner history. From zero, an owner batch crossing the local end would
+    /// overlap and stall the copy.
+    async fn ensure_stream_follower_worker(
+        &self,
+        identity: &QueueIdentity,
+    ) -> Arc<crate::replication::FollowerReplicationWorkerRuntime> {
+        let runtime =
+            self.ensure_follower_replication_worker(identity, ReplicationResourceKind::Stream);
+        let mut state = runtime.state.lock().await;
+        if state.cursor == FollowerCursor::zero(ReplicationResourceKind::Stream) {
+            match self
+                .engine
+                .stream_replication_next_offsets(&identity.topic, identity.partition.id())
+                .await
+            {
+                Ok((message_next_offset, event_next_offset)) => {
+                    state.cursor = FollowerCursor::Stream {
+                        message_next_offset,
+                        event_next_offset,
+                    };
+                }
+                Err(err) => tracing::debug!(
+                    topic = %identity.topic,
+                    partition = identity.partition.id(),
+                    "stream follower starts from zero: {err}"
+                ),
+            }
+        }
+        drop(state);
+        runtime
+    }
+
     /// Promote this copy at its own tails after a rejoin that changed
     /// storage. The reopened handle starts as owner, so it steps down first
     /// and promotion checks every cursor event is applied.
@@ -6048,7 +6082,7 @@ impl Broker<StromaEngine> {
                     saved.filter(|_| rejoin.records_dropped == 0 && rejoin.events_dropped == 0);
                 self.become_stream_follower_with_epoch(&topic, partition.id(), assignment_epoch)
                     .await?;
-                let runtime = self.ensure_follower_replication_worker(&identity, ReplicationResourceKind::Stream);
+                let runtime = self.ensure_stream_follower_worker(&identity).await;
                 if let Some(saved) = saved {
                     *runtime.state.lock().await = saved;
                 }
@@ -6087,7 +6121,7 @@ impl Broker<StromaEngine> {
                     .await?;
                 self.become_stream_follower_with_epoch(&topic, partition.id(), assignment_epoch)
                     .await?;
-                self.ensure_follower_replication_worker(&identity, ReplicationResourceKind::Stream);
+                self.ensure_stream_follower_worker(&identity).await;
                 Ok(BrokerAssignmentTransitionApply::Applied(transition.intent))
             }
             LocalAssignmentIntent::DemoteOwnerToFollower => {
@@ -6102,7 +6136,7 @@ impl Broker<StromaEngine> {
                 // role-gated appends are rejected from here on).
                 self.become_stream_follower_with_epoch(&topic, partition.id(), assignment_epoch)
                     .await?;
-                self.ensure_follower_replication_worker(&identity, ReplicationResourceKind::Stream);
+                self.ensure_stream_follower_worker(&identity).await;
                 Ok(BrokerAssignmentTransitionApply::Applied(transition.intent))
             }
             LocalAssignmentIntent::FreezeOwner => {

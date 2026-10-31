@@ -1475,6 +1475,15 @@ impl StromaEngine {
             .await
     }
 
+    /// A stream copy's record and cursor event tails.
+    pub async fn stream_replication_next_offsets(
+        &self,
+        tp: &str,
+        part: u32,
+    ) -> Result<(Offset, Offset), StromaError> {
+        self.inner.stream_replication_next_offsets(tp, part).await
+    }
+
     /// Cut a stream copy back to the owner history of `epoch` before a role
     /// change at that epoch, releasing a recovery seal when allowed.
     pub async fn rejoin_stream_at_epoch(
