@@ -7,10 +7,10 @@
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { GITHUB_REPO as GITHUB } from "../data/repo.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const DOCS_ROOT = path.join(REPO_ROOT, "website/src/content/docs");
-const GITHUB = "https://github.com/Axmouth/fibril";
 const VERSION_DIR = /^\d+\.\d+$/;
 
 // Versioned snapshots sit one folder deeper than the page they were copied

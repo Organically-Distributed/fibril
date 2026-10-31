@@ -15,7 +15,7 @@ import (
 	"os"
 	"time"
 
-	fibril "github.com/Axmouth/fibril/clients/go"
+	fibril "fibril.sh/go"
 )
 
 // Addr is the broker address, from FIBRIL_ADDR (default 127.0.0.1:9876).

@@ -8,8 +8,8 @@ import (
 	"context"
 	"time"
 
-	fibril "github.com/Axmouth/fibril/clients/go"
-	"github.com/Axmouth/fibril/clients/go/examples/internal/exharness"
+	fibril "fibril.sh/go"
+	"fibril.sh/go/examples/internal/exharness"
 )
 
 func main() {

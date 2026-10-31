@@ -9,27 +9,28 @@ deliveries, and plain error returns.
 
 Pre-alpha. No version has been tagged yet, and the API tracks the source tree.
 
-The module path is `github.com/Axmouth/fibril/clients/go`. It lives in a
-subdirectory of the Fibril repo, so its versions are git tags of the form
+The module path is `fibril.sh/go`, a vanity path that points at this folder
+of the Fibril repo, so imports keep working if the repository moves. Resolving
+it needs Go 1.25 or later. Its versions are git tags of the form
 `clients/go/vX.Y.Z` (for example `clients/go/v0.4.0`), not the repo's plain
 `vX.Y.Z` release tags.
 
 Until a tag exists, depend on a commit:
 
 ```sh
-go get github.com/Axmouth/fibril/clients/go@main
+go get fibril.sh/go@main
 ```
 
 or point a `replace` directive at a local checkout:
 
 ```
-replace github.com/Axmouth/fibril/clients/go => ../fibril/clients/go
+replace fibril.sh/go => ../fibril/clients/go
 ```
 
 Once tagged, it will install with:
 
 ```sh
-go get github.com/Axmouth/fibril/clients/go@latest
+go get fibril.sh/go@latest
 ```
 
 Requires Go 1.23 or newer. There are no third-party dependencies.
@@ -43,7 +44,7 @@ import (
 	"context"
 	"log"
 
-	fibril "github.com/Axmouth/fibril/clients/go"
+	fibril "fibril.sh/go"
 )
 
 type Order struct {

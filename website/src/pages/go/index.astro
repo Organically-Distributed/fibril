@@ -1,0 +1,28 @@
+---
+// The Go vanity import page. nginx serves it for /go and every path under it,
+// so one page answers for the module and all of its packages. The go-import
+// subdirectory field needs Go 1.25 or later.
+import { GITHUB_REPO, GO_MODULE, GO_SUBDIR } from "../../data/repo.mjs";
+
+const goImport = `${GO_MODULE} git ${GITHUB_REPO} ${GO_SUBDIR}`;
+const goSource = `${GO_MODULE} ${GITHUB_REPO} ${GITHUB_REPO}/tree/main/${GO_SUBDIR}{/dir} ${GITHUB_REPO}/blob/main/${GO_SUBDIR}{/dir}/{file}#L{line}`;
+const docs = `https://pkg.go.dev/${GO_MODULE}`;
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="go-import" content={goImport} />
+    <meta name="go-source" content={goSource} />
+    <meta http-equiv="refresh" content={`3; url=${docs}`} />
+    <title>Fibril Go client</title>
+  </head>
+  <body>
+    <p>
+      <code>go get {GO_MODULE}</code> installs the Fibril Go client. Its
+      documentation is on <a href={docs}>pkg.go.dev</a> and the source is in
+      <a href={`${GITHUB_REPO}/tree/main/${GO_SUBDIR}`}>{GO_SUBDIR}</a>.
+    </p>
+  </body>
+</html>

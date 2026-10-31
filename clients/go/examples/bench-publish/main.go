@@ -14,7 +14,7 @@ import (
 	"strconv"
 	"time"
 
-	fibril "github.com/Axmouth/fibril/clients/go"
+	fibril "fibril.sh/go"
 )
 
 func env(key, def string) string {

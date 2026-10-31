@@ -89,7 +89,7 @@ Names, as checked on 2026-10-29:
 | TypeScript client | npm | `@fibril/client` | Free. The `@fibril` org could not be checked from the registry API, so confirm by creating it. |
 | Python client | PyPI | `fibril` | Free |
 | C# client | NuGet | `Fibril`, `Fibril.Client` | Free |
-| Go client | Go modules | `github.com/Axmouth/fibril/clients/go` | Module path is the repo path, and the repo is public |
+| Go client | Go modules | `fibril.sh/go` | A vanity path served by the docs site, so the repository can move without breaking imports. Resolving it needs Go 1.25 or later |
 
 Taken by unrelated projects: crates.io `fibril` (a fibers library) and `keratin`
 (an embedded database), and npm `fibril` (a parked placeholder). None of them is

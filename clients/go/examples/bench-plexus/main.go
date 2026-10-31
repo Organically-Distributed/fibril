@@ -19,7 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	fibril "github.com/Axmouth/fibril/clients/go"
+	fibril "fibril.sh/go"
 )
 
 func env(key, def string) string {

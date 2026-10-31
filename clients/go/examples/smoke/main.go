@@ -10,7 +10,7 @@ import (
 	"os"
 	"time"
 
-	fibril "github.com/Axmouth/fibril/clients/go"
+	fibril "fibril.sh/go"
 )
 
 func main() {

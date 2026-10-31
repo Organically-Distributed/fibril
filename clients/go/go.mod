@@ -1,3 +1,3 @@
-module github.com/Axmouth/fibril/clients/go
+module fibril.sh/go
 
 go 1.23
