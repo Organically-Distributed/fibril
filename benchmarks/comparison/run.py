@@ -17,7 +17,7 @@ import urllib.request
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parent.parent
 IMAGES = {
-    "fibril": "ghcr.io/axmouth/fibril-server@sha256:8c5a722c6b134141f9d0aced286ecf5c9ca1627de4d325652d287bc72aadca7b",
+    "fibril": "ghcr.io/organically-distributed/fibril-server@sha256:8c5a722c6b134141f9d0aced286ecf5c9ca1627de4d325652d287bc72aadca7b",
     "nats": "nats@sha256:ac8f88a6494bffc2c2a5289a0ca61cb28a9145c11ba5677cf24265d07f46d8d4",
     "rabbitmq": "rabbitmq@sha256:a7faa436fbb827d5554ef3213de39bb0d858a8e7caf184179db568630b21c683",
 }
