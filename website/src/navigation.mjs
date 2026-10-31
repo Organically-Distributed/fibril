@@ -178,6 +178,10 @@ export const sidebar = [
             slug: "development/stream-filters-design",
           },
           {
+            label: "Stream failover",
+            slug: "development/stream-failover-design",
+          },
+          {
             label: "MCP server",
             slug: "development/mcp-design",
           },
