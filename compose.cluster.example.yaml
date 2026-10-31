@@ -21,7 +21,7 @@
 # Clustering is experimental and not yet production-ready high availability.
 
 x-broker: &broker
-  image: ghcr.io/axmouth/fibril-server:main
+  image: ghcr.io/organically-distributed/fibril-server:main
   # The :main tag is mutable, so always re-pull it. Without this, `compose up`
   # reuses whatever :main was cached on a previous run and the tryout can
   # silently run a stale build.

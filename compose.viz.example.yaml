@@ -23,7 +23,7 @@
 
 services:
   broker:
-    image: ghcr.io/axmouth/fibril-server:main
+    image: ghcr.io/organically-distributed/fibril-server:main
     # The :main tag is mutable, so always re-pull it rather than reuse a stale
     # image cached on a previous run.
     pull_policy: always
@@ -40,7 +40,7 @@ services:
   # The visualizer. Run with `docker compose run --rm viz` so it gets a real
   # terminal (tty + stdin); it is not a background service, so `up` skips it.
   viz:
-    image: ghcr.io/axmouth/fibril-server:main
+    image: ghcr.io/organically-distributed/fibril-server:main
     pull_policy: always
     # Profiled so a plain `up` starts only the broker. `compose run viz` starts it
     # regardless of profile and brings the broker up as its dependency.

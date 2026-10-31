@@ -16,12 +16,12 @@ Docker (recommended), or a current Rust toolchain and Git to build from source.
 The quickest path is the published `main` image from GitHub Container Registry:
 
 ```sh
-docker pull ghcr.io/axmouth/fibril-server:main
+docker pull ghcr.io/organically-distributed/fibril-server:main
 docker run --rm \
   -p 9876:9876 \
   -p 8081:8081 \
   -v fibril-server-data:/app/server_data \
-  ghcr.io/axmouth/fibril-server:main
+  ghcr.io/organically-distributed/fibril-server:main
 ```
 
 The `main` tag is a moving pre-release image. CI also publishes immutable

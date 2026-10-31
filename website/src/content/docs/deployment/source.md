@@ -31,12 +31,12 @@ The easiest current runtime path is the `main` image from GitHub Container
 Registry:
 
 ```sh
-docker pull ghcr.io/axmouth/fibril-server:main
+docker pull ghcr.io/organically-distributed/fibril-server:main
 docker run --rm \
   -p 9876:9876 \
   -p 8081:8081 \
   -v fibril-server-data:/app/server_data \
-  ghcr.io/axmouth/fibril-server:main
+  ghcr.io/organically-distributed/fibril-server:main
 ```
 
 The `main` tag is a moving pre-release image. CI also publishes immutable
@@ -63,7 +63,7 @@ For a one-off container on the same Docker network as the broker, override the
 default server command:
 
 ```sh
-docker run --rm --network container:fibril-server ghcr.io/axmouth/fibril-server:main \
+docker run --rm --network container:fibril-server ghcr.io/organically-distributed/fibril-server:main \
   fibrilctl admin messages orders.created --limit 10
 ```
 

@@ -41,7 +41,7 @@ jobs:
       - name: Validate deploy Compose file
         run: docker compose -f compose.website.deploy.yaml config --quiet
         env:
-          SITE_IMAGE: ghcr.io/axmouth/fibril/site:test
+          SITE_IMAGE: ghcr.io/organically-distributed/fibril/site:test
           SITE_DOMAIN: fibril.sh
 
       - name: Verify production server navigation behind a TLS proxy
@@ -56,5 +56,5 @@ jobs:
           test "$apex" = 'Host(`fibril.sh`)'
           test "$www" = 'Host(`www.fibril.sh`)'
         env:
-          SITE_IMAGE: ghcr.io/axmouth/fibril/site:test
+          SITE_IMAGE: ghcr.io/organically-distributed/fibril/site:test
           SITE_DOMAIN: fibril.sh
