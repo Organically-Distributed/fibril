@@ -838,6 +838,9 @@ pub async fn topology(
                         "owner": assignment.owner,
                         "followers": assignment.followers,
                         "epoch": assignment.epoch,
+                        // What a durable stream confirms by. The express
+                        // tiers stay owner-only and confirm locally.
+                        "durability": durability_policy_json(assignment.confirm_policy(), false),
                     })
                 })
                 .collect();
