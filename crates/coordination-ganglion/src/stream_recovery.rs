@@ -39,6 +39,26 @@ pub fn epoch_starts(
         .map(Option::unwrap_or_default)
 }
 
+/// Drop history starts of streams that no longer have an assignment. A
+/// recreated stream numbers its epochs again and must not inherit them.
+pub(crate) fn prune_epoch_starts(snapshot: &mut CoordinationSnapshot) {
+    let stale: Vec<String> = snapshot
+        .attributes
+        .keys()
+        .filter(|key| key.starts_with(STREAM_EPOCH_STARTS_PREFIX))
+        .filter(|key| {
+            serde_json::from_str::<ResourceIdentity>(&key[STREAM_EPOCH_STARTS_PREFIX.len()..])
+                .map_or(true, |resource| {
+                    !snapshot.assignments.contains_key(&resource)
+                })
+        })
+        .cloned()
+        .collect();
+    for key in stale {
+        snapshot.attributes.remove(&key);
+    }
+}
+
 /// Tails one sealed copy reported, already fenced at the recovery epoch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SealedStreamCopy {
@@ -335,6 +355,29 @@ mod tests {
         let mut queue = p.clone();
         queue.previous.resource.namespace = crate::QUEUE_NAMESPACE.into();
         assert!(recovery_assignment(&queue, &[copy("a", 1, 0), copy("b", 1, 0)]).is_err());
+    }
+
+    #[test]
+    fn history_starts_of_removed_streams_are_dropped() {
+        let kept = stream("a", &[], ReplicationDurabilityPolicy::LocalDurable);
+        let mut gone = kept.clone();
+        gone.resource.name = "gone".into();
+        let mut snapshot = CoordinationSnapshot::default();
+        snapshot
+            .assignments
+            .insert(kept.resource.clone(), kept.clone());
+        for resource in [&kept.resource, &gone.resource] {
+            snapshot
+                .attributes
+                .insert(epoch_starts_key(resource), "[]".into());
+        }
+        prune_epoch_starts(&mut snapshot);
+        assert!(snapshot
+            .attributes
+            .contains_key(&epoch_starts_key(&kept.resource)));
+        assert!(!snapshot
+            .attributes
+            .contains_key(&epoch_starts_key(&gone.resource)));
     }
 
     #[test]

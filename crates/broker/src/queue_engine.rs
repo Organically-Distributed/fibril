@@ -1475,6 +1475,21 @@ impl StromaEngine {
             .await
     }
 
+    /// Cut a stream copy back to the owner history of `epoch` before a role
+    /// change at that epoch, releasing a recovery seal when allowed.
+    pub async fn rejoin_stream_at_epoch(
+        &self,
+        tp: &str,
+        part: u32,
+        epoch: u64,
+        starts: &[stroma_core::StreamEpochStart],
+        release_seal: bool,
+    ) -> Result<stroma_core::StreamRejoin, StromaError> {
+        self.inner
+            .rejoin_stream_at_epoch(tp, part, epoch, starts, release_seal)
+            .await
+    }
+
     /// Failover promotion at the stream follower's own tails, fenced at the
     /// assignment epoch (mirrors `promote_queue_follower_to_local_tail`).
     pub async fn promote_stream_follower_to_local_tail(

@@ -1055,6 +1055,15 @@ fn project_snapshot(
                 assignment.epoch,
             );
             mapped.history = history;
+            // Without its history starts a rejoining copy could keep entries
+            // the new owner replaced, so an unreadable record withholds the
+            // assignment.
+            mapped.epoch_starts = stream_recovery::epoch_starts(snapshot, resource)
+                .map_err(|error| {
+                    tracing::error!(topic = %stream.topic, %error, "stream assignment withheld")
+                })
+                .ok()?
+                .into();
             Some((stream, mapped))
         })
         .collect();
@@ -3798,6 +3807,7 @@ impl GanglionCoordination {
             };
             let held = promotion::retain_unproven_assignments(&committed, &mut desired, &hold_lost_follower)
                 .map_err(|error| ControlError::Consensus(OpenraftAdapterError::Storage(error)))?;
+            stream_recovery::prune_epoch_starts(&mut desired);
             operator_override::clear_settled_owner_losses(&mut desired, |node| {
                 live_nodes.contains_key(node) && !draining.contains(node)
             });

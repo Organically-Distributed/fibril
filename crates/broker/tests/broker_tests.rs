@@ -4448,6 +4448,208 @@ async fn stream_follower_catches_up_records_and_cursor_from_owner() {
     follower.shutdown().await;
 }
 
+/// After a stream failover the old owner comes back as a follower holding
+/// records the new owner never had. It cuts them at the new owner's history
+/// start, clamps its cursor and then takes the new owner's records at those
+/// offsets.
+#[tokio::test]
+async fn old_stream_owner_rejoins_under_the_new_owner_history() {
+    use fibril_broker::queue_engine::StreamStore;
+    use fibril_broker::stream::StreamDurability;
+
+    let headers = || MessageHeaders {
+        published: unix_millis(),
+        publish_received: unix_millis(),
+        content_type: None,
+        extra: Default::default(),
+    };
+    let stream = StreamIdentity::new("events", Partition::new(0));
+    let (old, _old_dir) = open_test_broker().await;
+    let (new, _new_dir) = open_test_broker().await;
+
+    let old_channel = old
+        .get_or_open_stream("events", 0, StreamDurability::Durable, None)
+        .await
+        .unwrap();
+    let old_assignment = StreamAssignment::new(stream.clone(), "old", vec!["new".into()], 1);
+    old.apply_stream_assignment_transition(&LocalStreamAssignmentTransition {
+        stream: stream.clone(),
+        previous_role: None,
+        next_role: Some(LocalAssignmentRole::Owner),
+        previous: None,
+        next: Some(old_assignment.clone()),
+        intent: LocalAssignmentIntent::BecomeOwner,
+    })
+    .await
+    .unwrap();
+    for payload in ["a", "b", "c", "lost-3", "lost-4"] {
+        old_channel.publish(headers(), payload.into()).await.unwrap();
+    }
+    old_channel.settle("readers", 4).await.unwrap();
+    old_channel.flush_cursor_commits().await.unwrap();
+
+    // The new owner took over at epoch 2 from a copy holding three records
+    // and no cursor events, then wrote its own record at offset 3.
+    let mut new_assignment = StreamAssignment::new(stream.clone(), "new", vec!["old".into()], 2);
+    new_assignment.epoch_starts = vec![fibril_broker::coordination::StreamEpochStart {
+        epoch: 2,
+        records: 3,
+        cursor_events: 0,
+    }]
+    .into();
+    let new_channel = new
+        .get_or_open_stream("events", 0, StreamDurability::Durable, None)
+        .await
+        .unwrap();
+    new.apply_stream_assignment_transition(&LocalStreamAssignmentTransition {
+        stream: stream.clone(),
+        previous_role: None,
+        next_role: Some(LocalAssignmentRole::Owner),
+        previous: None,
+        next: Some(new_assignment.clone()),
+        intent: LocalAssignmentIntent::BecomeOwner,
+    })
+    .await
+    .unwrap();
+    for payload in ["a", "b", "c", "new-3"] {
+        new_channel.publish(headers(), payload.into()).await.unwrap();
+    }
+
+    assert!(matches!(
+        old.apply_stream_assignment_transition(&LocalStreamAssignmentTransition {
+            stream: stream.clone(),
+            previous_role: Some(LocalAssignmentRole::Owner),
+            next_role: Some(LocalAssignmentRole::Follower),
+            previous: Some(old_assignment),
+            next: Some(new_assignment),
+            intent: LocalAssignmentIntent::DemoteOwnerToFollower,
+        })
+        .await
+        .unwrap(),
+        BrokerAssignmentTransitionApply::Applied(LocalAssignmentIntent::DemoteOwnerToFollower)
+    ));
+    let engine = old.engine();
+    let records = engine.read_stream_records("events", 0, 0, 10).await.unwrap();
+    let payloads: Vec<_> = records.iter().map(|(_, p, _)| p.clone()).collect();
+    assert_eq!(payloads, vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]);
+    let reopened = old
+        .get_or_open_stream("events", 0, StreamDurability::Durable, None)
+        .await
+        .unwrap();
+    assert_eq!(reopened.head_tail().await.unwrap(), (0, 3));
+    // The cursor's only commit was past the cut. A snapshot can keep it,
+    // never above the new tail.
+    let cursors = reopened.cursors().await.unwrap();
+    assert!(cursors.iter().all(|(_, offset)| *offset <= 3), "{cursors:?}");
+
+    // The shared prefix was replicated before the failover. Catch up past it.
+    let outcome = old
+        .catch_up_stream_follower(
+            new.as_ref(),
+            "events",
+            Partition::new(0),
+            StreamCatchUpOptions {
+                message_from: 3,
+                event_from: 0,
+                max_messages_per_read: 10,
+                max_events_per_read: 10,
+                max_bytes_per_read: usize::MAX,
+                max_iterations: 4,
+                max_wait_ms: 0,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(outcome, BrokerStreamCatchUp::CaughtUp(_)), "{outcome:?}");
+    let records = engine.read_stream_records("events", 0, 0, 10).await.unwrap();
+    let payloads: Vec<_> = records.iter().map(|(_, p, _)| p.clone()).collect();
+    assert_eq!(payloads[3], b"new-3".to_vec());
+    assert_eq!(payloads.len(), 4);
+
+    old.shutdown().await;
+    new.shutdown().await;
+}
+
+/// The copy a stream recovery chose stays sealed until the new assignment
+/// reaches it, then releases the seal whole and serves as owner.
+#[tokio::test]
+async fn sealed_stream_follower_is_released_and_promoted() {
+    use fibril_broker::stream::StreamDurability;
+
+    let headers = || MessageHeaders {
+        published: unix_millis(),
+        publish_received: unix_millis(),
+        content_type: None,
+        extra: Default::default(),
+    };
+    let stream = StreamIdentity::new("events", Partition::new(0));
+    let (broker, _dir) = open_test_broker().await;
+    let channel = broker
+        .get_or_open_stream("events", 0, StreamDurability::Durable, None)
+        .await
+        .unwrap();
+    let first = StreamAssignment::new(stream.clone(), "a", vec!["b".into()], 1);
+    broker
+        .apply_stream_assignment_transition(&LocalStreamAssignmentTransition {
+            stream: stream.clone(),
+            previous_role: None,
+            next_role: Some(LocalAssignmentRole::Owner),
+            previous: None,
+            next: Some(first.clone()),
+            intent: LocalAssignmentIntent::BecomeOwner,
+        })
+        .await
+        .unwrap();
+    for payload in ["a", "b"] {
+        channel.publish(headers(), payload.into()).await.unwrap();
+    }
+    let sealed = broker
+        .engine()
+        .seal_replica_for_recovery(
+            "events",
+            0,
+            None,
+            true,
+            stroma_core::RecoverySealRequest {
+                transition: [3; 32],
+                fence_epoch: 2,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(sealed.history.logs.is_stream());
+    assert!(channel.publish(headers(), b"fenced".to_vec()).await.is_err());
+
+    // Recovery kept this copy as owner at the next epoch.
+    let mut next = StreamAssignment::new(stream.clone(), "a", vec![], 2);
+    next.epoch_starts = vec![fibril_broker::coordination::StreamEpochStart {
+        epoch: 2,
+        records: 2,
+        cursor_events: 0,
+    }]
+    .into();
+    assert!(matches!(
+        broker
+            .apply_stream_assignment_transition(&LocalStreamAssignmentTransition {
+                stream: stream.clone(),
+                previous_role: Some(LocalAssignmentRole::Owner),
+                next_role: Some(LocalAssignmentRole::Owner),
+                previous: Some(first),
+                next: Some(next),
+                intent: LocalAssignmentIntent::RefreshOwner,
+            })
+            .await
+            .unwrap(),
+        BrokerAssignmentTransitionApply::Applied(LocalAssignmentIntent::RefreshOwner)
+    ));
+    let reopened = broker
+        .get_or_open_stream("events", 0, StreamDurability::Durable, None)
+        .await
+        .unwrap();
+    assert_eq!(reopened.publish(headers(), b"c".to_vec()).await.unwrap(), 2);
+    broker.shutdown().await;
+}
+
 /// A durable stream with replicas confirms a publish only after the replication
 /// durability policy is met: the tier-derived policy (durable + 1 follower =>
 /// ReplicaDurable nodes 2) is cached when the owner role is applied, so the

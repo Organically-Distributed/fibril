@@ -5920,6 +5920,56 @@ impl Broker<StromaEngine> {
         }
     }
 
+    /// Bring local stream storage onto the owner history of `next` before a
+    /// role change at its epoch. A copy that followed an older owner cuts the
+    /// unconfirmed entries past the new owner's start. `member` releases a
+    /// recovery seal, which only a copy in the new assignment may do.
+    async fn rejoin_stream_history(
+        &self,
+        topic: &str,
+        partition: Partition,
+        next: &crate::coordination::StreamAssignment,
+        member: bool,
+    ) -> Result<stroma_core::StreamRejoin, BrokerError> {
+        let rejoin = self
+            .engine
+            .rejoin_stream_at_epoch(
+                topic,
+                partition.id(),
+                next.epoch,
+                &next.epoch_starts,
+                member,
+            )
+            .await?;
+        let cut = rejoin.records_dropped > 0 || rejoin.events_dropped > 0;
+        if rejoin.closed_handle || cut {
+            // The channel buffers recent records and caches the tail. Reopen it
+            // from storage on the next request.
+            self.close_stream(topic, partition.id());
+        }
+        if cut {
+            // A running follower worker reads from offsets past the cut.
+            let identity = Self::stream_worker_identity(&next.stream);
+            self.stop_follower_replication_worker(&identity).await;
+        }
+        Ok(rejoin)
+    }
+
+    /// Promote this copy at its own tails after a rejoin that changed
+    /// storage. The reopened handle starts as owner, so it steps down first
+    /// and promotion checks every cursor event is applied.
+    async fn promote_rejoined_stream(
+        &self,
+        topic: &str,
+        partition: Partition,
+        epoch: u64,
+    ) -> Result<StreamPromotionOutcome, BrokerError> {
+        self.become_stream_follower_with_epoch(topic, partition.id(), epoch)
+            .await?;
+        self.promote_stream_follower_to_local_tail(topic, partition, epoch)
+            .await
+    }
+
     /// Apply one local stream role change. Mirrors [`apply_assignment_transition`]
     /// but simpler: streams have no consumer leases, tracked deliveries, or offset
     /// release. Role changes persist the assignment epoch into the (queue-handle)
@@ -5965,7 +6015,20 @@ impl Broker<StromaEngine> {
                 LocalAssignmentIntent::Noop,
             )),
             LocalAssignmentIntent::RefreshOwner => {
-                Ok(BrokerAssignmentTransitionApply::Noop(transition.intent))
+                // Recovery can keep the owner and seal it at the next epoch.
+                let next = transition
+                    .next
+                    .as_ref()
+                    .expect("owner refresh has an assignment");
+                let rejoin = self
+                    .rejoin_stream_history(&topic, partition, next, true)
+                    .await?;
+                if !rejoin.released_seal && !rejoin.closed_handle {
+                    return Ok(BrokerAssignmentTransitionApply::Noop(transition.intent));
+                }
+                self.promote_rejoined_stream(&topic, partition, assignment_epoch)
+                    .await?;
+                Ok(BrokerAssignmentTransitionApply::Applied(transition.intent))
             }
             LocalAssignmentIntent::RefreshFollower => {
                 let source_changed = matches!((&transition.previous, &transition.next),
@@ -5976,6 +6039,16 @@ impl Broker<StromaEngine> {
                 let saved = self
                     .stop_follower_replication_worker_preserving_state(&identity)
                     .await;
+                let next = transition
+                    .next
+                    .as_ref()
+                    .expect("follower refresh has an assignment");
+                let rejoin = self
+                    .rejoin_stream_history(&topic, partition, next, true)
+                    .await?;
+                // A cut copy resumes from its own tails.
+                let saved =
+                    saved.filter(|_| rejoin.records_dropped == 0 && rejoin.events_dropped == 0);
                 self.become_stream_follower_with_epoch(&topic, partition.id(), assignment_epoch)
                     .await?;
                 let runtime = self.ensure_follower_replication_worker(&identity, ReplicationResourceKind::Stream);
@@ -5985,6 +6058,18 @@ impl Broker<StromaEngine> {
                 Ok(BrokerAssignmentTransitionApply::Applied(transition.intent))
             }
             LocalAssignmentIntent::BecomeOwner => {
+                let next = transition
+                    .next
+                    .as_ref()
+                    .expect("new owner has an assignment");
+                let rejoin = self
+                    .rejoin_stream_history(&topic, partition, next, true)
+                    .await?;
+                if rejoin.released_seal || rejoin.closed_handle {
+                    self.promote_rejoined_stream(&topic, partition, assignment_epoch)
+                        .await?;
+                    return Ok(BrokerAssignmentTransitionApply::Applied(transition.intent));
+                }
                 // Cold streams become owner lazily on first traffic (route_stream
                 // materializes from coordination config), same rule as queues.
                 if self.engine.is_materialized(&topic, partition.id(), None) {
@@ -5997,12 +6082,24 @@ impl Broker<StromaEngine> {
                 }
             }
             LocalAssignmentIntent::BecomeFollower => {
+                let next = transition
+                    .next
+                    .as_ref()
+                    .expect("new follower has an assignment");
+                self.rejoin_stream_history(&topic, partition, next, true)
+                    .await?;
                 self.become_stream_follower_with_epoch(&topic, partition.id(), assignment_epoch)
                     .await?;
                 self.ensure_follower_replication_worker(&identity, ReplicationResourceKind::Stream);
                 Ok(BrokerAssignmentTransitionApply::Applied(transition.intent))
             }
             LocalAssignmentIntent::DemoteOwnerToFollower => {
+                let next = transition
+                    .next
+                    .as_ref()
+                    .expect("demoted owner has an assignment");
+                self.rejoin_stream_history(&topic, partition, next, true)
+                    .await?;
                 // Becoming a follower at the new epoch fences this deposed owner's
                 // own writes at the storage layer (the stream channel can linger;
                 // role-gated appends are rejected from here on).
@@ -6018,6 +6115,15 @@ impl Broker<StromaEngine> {
                 if !self.engine.durable_is_stream(&topic, partition.id()) {
                     return Ok(BrokerAssignmentTransitionApply::Noop(transition.intent));
                 }
+                if let Some(next) = &transition.next
+                    && self
+                        .rejoin_stream_history(&topic, partition, next, false)
+                        .await?
+                        .still_sealed
+                {
+                    // The recovery seal already fences this copy.
+                    return Ok(BrokerAssignmentTransitionApply::Noop(transition.intent));
+                }
                 // Owner role removed entirely: bump the fencing epoch so this
                 // deposed owner can no longer serve writes.
                 self.engine
@@ -6026,10 +6132,22 @@ impl Broker<StromaEngine> {
                 Ok(BrokerAssignmentTransitionApply::Applied(transition.intent))
             }
             LocalAssignmentIntent::PromoteFollowerToOwner => {
+                // A copy sealed by the recovery that chose it releases the seal
+                // here. One that followed an older owner cuts back first.
+                let next = transition
+                    .next
+                    .as_ref()
+                    .expect("promoted owner has an assignment");
+                let rejoin = self
+                    .rejoin_stream_history(&topic, partition, next, true)
+                    .await?;
                 // Never-materialized streams have no local follower state to
                 // promote: stay cold and become owner lazily on first traffic
                 // (route_stream materializes from config), same rule as queues.
-                if !self.engine.is_materialized(&topic, partition.id(), None) {
+                if !rejoin.closed_handle
+                    && !rejoin.released_seal
+                    && !self.engine.is_materialized(&topic, partition.id(), None)
+                {
                     return Ok(BrokerAssignmentTransitionApply::Noop(transition.intent));
                 }
                 // Failover promotion (promote-to-local-tail under the epoch fence):
@@ -6039,10 +6157,14 @@ impl Broker<StromaEngine> {
                 // assignment epoch fences its unreplicated suffix. A refusal
                 // (unapplied cursor-commit events) leaves the stream a follower.
                 let stopped_worker = self.stop_follower_replication_worker(&identity).await;
-                match self
-                    .promote_stream_follower_to_local_tail(&topic, partition, assignment_epoch)
-                    .await?
-                {
+                let promoted = if rejoin.closed_handle || rejoin.released_seal {
+                    self.promote_rejoined_stream(&topic, partition, assignment_epoch)
+                        .await?
+                } else {
+                    self.promote_stream_follower_to_local_tail(&topic, partition, assignment_epoch)
+                        .await?
+                };
+                match promoted {
                     StreamPromotionOutcome::Promoted {
                         message_next_offset,
                         event_next_offset,
@@ -6075,11 +6197,21 @@ impl Broker<StromaEngine> {
             LocalAssignmentIntent::StopFollower => {
                 let stopped_worker = self.stop_follower_replication_worker(&identity).await;
                 // Same rule as FreezeOwner: never create a stream partition
-                // just to fence it.
+                // just to fence it. A recovery seal already fences it.
                 if self.engine.durable_is_stream(&topic, partition.id()) {
-                    self.engine
-                        .advance_stream_epoch(&topic, partition.id(), assignment_epoch)
-                        .await?;
+                    let sealed = match &transition.next {
+                        Some(next) => {
+                            self.rejoin_stream_history(&topic, partition, next, false)
+                                .await?
+                                .still_sealed
+                        }
+                        None => false,
+                    };
+                    if !sealed {
+                        self.engine
+                            .advance_stream_epoch(&topic, partition.id(), assignment_epoch)
+                            .await?;
+                    }
                 }
                 tracing::debug!(
                     topic,

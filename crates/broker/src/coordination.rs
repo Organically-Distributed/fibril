@@ -478,6 +478,9 @@ pub struct StreamAssignment {
     /// fenced. Holds steady while the owner is unchanged.
     pub epoch: u64,
     pub history: Option<Arc<crate::history_replication::AcceptedHistory>>,
+    /// Where each failover's owner history starts, oldest first. A copy that
+    /// followed an older owner cuts back to the first start it has not seen.
+    pub epoch_starts: Arc<[StreamEpochStart]>,
 }
 
 impl StreamAssignment {
@@ -493,6 +496,7 @@ impl StreamAssignment {
             followers,
             epoch,
             history: None,
+            epoch_starts: Arc::new([]),
         }
     }
 
