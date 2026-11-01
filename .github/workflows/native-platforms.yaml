@@ -1,0 +1,66 @@
+name: Native platform compatibility
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/native-platforms.yaml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**"
+      - "benches/**"
+      - "scripts/platform-smoke.py"
+      - "scripts/*stroma-source.sh"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/native-platforms.yaml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**"
+      - "benches/**"
+      - "scripts/platform-smoke.py"
+      - "scripts/*stroma-source.sh"
+
+permissions:
+  contents: read
+
+jobs:
+  native-smoke:
+    name: Durable broker smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Use git dependencies
+        shell: bash
+        run: scripts/ci-stroma-source.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build native server and workload
+        run: cargo build --release --bin fibril-server --bin steady_c
+      - name: Run durable workload
+        shell: bash
+        run: |
+          suffix=""
+          if [ "$RUNNER_OS" = "Windows" ]; then suffix=".exe"; fi
+          python scripts/platform-smoke.py \
+            --server "target/release/fibril-server${suffix}" \
+            --client "target/release/steady_c${suffix}" \
+            --output platform-smoke
+      - name: Retain smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: platform-smoke-${{ matrix.os }}
+          path: |
+            platform-smoke/*.log
+            platform-smoke/*.json
+          if-no-files-found: ignore
