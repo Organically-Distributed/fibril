@@ -115,6 +115,7 @@ struct Args {
     #[arg(long, default_value_t = false)]
     durable_readers: bool,
 
+    /// Target aggregate rate. Zero disables interval pacing for capacity checks.
     #[arg(long, default_value_t = 100_000)]
     rate_per_sec: u64,
 
@@ -505,12 +506,13 @@ async fn run_rate_limited_writers(
     measured_sent_total: Arc<AtomicU64>,
     verify: bool,
 ) -> WriterStats {
+    let unthrottled = rate_per_sec == 0;
     let mut handles = Vec::new();
     for writer_id in 0..writers {
         let measured_sent_total = measured_sent_total.clone();
         let writer_rate = rate_for_writer(rate_per_sec, writers, writer_id);
         let topic = topic.clone();
-        if writer_rate == 0 {
+        if !unthrottled && writer_rate == 0 {
             continue;
         }
         handles.push(tokio::spawn(async move {
@@ -525,7 +527,7 @@ async fn run_rate_limited_writers(
             let publisher = client.publisher(&topic).unwrap();
             let mut stats = WriterStats::default();
 
-            let period = Duration::from_secs_f64(1.0 / writer_rate as f64);
+            let period = Duration::from_secs_f64(1.0 / writer_rate.max(1) as f64);
             let mut tick = tokio::time::interval(period);
             tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
             let mut inflight = FuturesUnordered::new();
@@ -553,7 +555,7 @@ async fn run_rate_limited_writers(
                     Some((measured, id, sent_at, result)) = inflight.next(), if !inflight.is_empty() => {
                         record_confirm(&mut stats, measured, id, sent_at, result);
                     }
-                    _ = tick.tick(), if Instant::now() < measure_end
+                    _ = maybe_tick(&mut tick, unthrottled), if Instant::now() < measure_end
                         && (!confirmed || inflight.len() < confirm_window) => {
                         let now = Instant::now();
                         if now >= measure_end {
@@ -625,4 +627,10 @@ async fn run_rate_limited_writers(
         total.confirmed_ids.extend(stats.confirmed_ids);
     }
     total
+}
+
+async fn maybe_tick(tick: &mut tokio::time::Interval, unthrottled: bool) {
+    if !unthrottled {
+        tick.tick().await;
+    }
 }
