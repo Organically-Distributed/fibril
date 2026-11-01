@@ -53,14 +53,21 @@ jobs:
           done
 
   fault-injection-tests:
-    name: Fault injection tests
-    runs-on: ubuntu-latest
+    name: Fault injection tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    env:
+      CARGO_BUILD_JOBS: ${{ matrix.os == 'windows-latest' && 2 || 4 }}
     timeout-minutes: 45
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
       - name: Use git Stroma source
+        shell: bash
         run: scripts/ci-stroma-source.sh
 
       - name: Install Rust toolchain
@@ -72,19 +79,27 @@ jobs:
       # The feature compiles test-only file operation faults into keratin-log,
       # so it gets its own build instead of joining the workspace run.
       - name: Run tests with injected I/O faults
+        shell: bash
         run: |
-          ulimit -n 4096
+          if [ "$RUNNER_OS" != "Windows" ]; then ulimit -n 4096; fi
           cargo test -p fibril -p fibril-broker --features fibril/io-fault-injection
 
   simulation-tests:
-    name: Simulation tests
-    runs-on: ubuntu-latest
+    name: Simulation tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    env:
+      CARGO_BUILD_JOBS: ${{ matrix.os == 'windows-latest' && 2 || 4 }}
     timeout-minutes: 30
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
       - name: Use git Stroma source
+        shell: bash
         run: scripts/ci-stroma-source.sh
 
       - name: Install Rust toolchain
@@ -96,6 +111,7 @@ jobs:
       # The turmoil scenarios only compile under the simulation feature, which
       # swaps the broker network for simulated TCP.
       - name: Run turmoil simulation tests
+        shell: bash
         run: |
-          ulimit -n 4096
+          if [ "$RUNNER_OS" != "Windows" ]; then ulimit -n 4096; fi
           cargo test -p fibril-protocol --features simulation --test simulation_tests

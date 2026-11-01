@@ -64,7 +64,7 @@ fn node_config(
     let advertise = if private { UNROUTABLE } else { broker };
     let toml = format!(
         r#"[server]
-data_dir = "{data}"
+data_dir = {data}
 
 [broker]
 {visibility}
@@ -97,7 +97,7 @@ target_followers = 1
 [coordination.ganglion.assignment_durability]
 mode = "majority_durable"
 "#,
-        data = root.join(format!("data-{id}")).display(),
+        data = serde_json::to_string(&root.join(format!("data-{id}"))).unwrap(),
         listen = raft[id as usize - 1],
         bootstrap = id == 1,
         r1 = raft[0],

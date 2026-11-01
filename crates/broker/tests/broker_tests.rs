@@ -3633,7 +3633,7 @@ fn stray_partition_kind(root: &std::path::Path) -> Option<String> {
 }
 
 fn stray_partition_dir(root: &std::path::Path) -> std::path::PathBuf {
-    root.join("partitions/@none/events/0000000000")
+    root.join("partitions").join("@none").join("events").join("0000000000")
 }
 
 /// Captures log lines written while the guard lives. The tests run on the

@@ -43,7 +43,7 @@ fn spawn_node(root: &Path, id: u64, raft: &[String; 3]) -> Node {
 fn spawn_node_on(root: &Path, id: u64, raft: &[String; 3], broker: String, admin: String) -> Node {
     let toml = format!(
         r#"[server]
-data_dir = "{data}"
+data_dir = {data}
 
 [broker.listener]
 bind = "{broker}"
@@ -74,7 +74,7 @@ stream_replication_factor = 2
 [coordination.ganglion.assignment_durability]
 mode = "majority_durable"
 "#,
-        data = root.join(format!("data-{id}")).display(),
+        data = serde_json::to_string(&root.join(format!("data-{id}"))).unwrap(),
         listen = raft[id as usize - 1],
         bootstrap = id == 1,
         r1 = raft[0],

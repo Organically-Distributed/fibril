@@ -58,8 +58,14 @@ jobs:
           fi
 
   workspace-tests:
-    name: Workspace tests
-    runs-on: ubuntu-latest
+    name: Workspace tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    env:
+      CARGO_BUILD_JOBS: ${{ matrix.os == 'windows-latest' && 2 || 4 }}
     # A hung test otherwise holds the runner until the 6 hour job limit.
     timeout-minutes: 45
     steps:
@@ -67,6 +73,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Use git Stroma source
+        shell: bash
         run: scripts/ci-stroma-source.sh
 
       - name: Install Rust toolchain
@@ -78,7 +85,7 @@ jobs:
       - name: Run tests
         env:
           RUSTFLAGS: -Awarnings
-        run: cargo test --quiet --workspace
+        run: cargo test --quiet --workspace --no-fail-fast
 
   server-binary:
     name: Server release binary

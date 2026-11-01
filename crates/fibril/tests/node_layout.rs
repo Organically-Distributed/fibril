@@ -202,8 +202,17 @@ impl ServerProcess {
         let admin_addr = common::free_loopback_addr();
         let out = std::fs::File::create(&log).expect("log file");
         let err = out.try_clone().expect("log file clone");
-        let child = Command::new(env!("CARGO_BIN_EXE_fibril-server"))
-            .env_clear()
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fibril-server"));
+        command.env_clear();
+        // Winsock needs SystemRoot to load its service providers. OS runtime
+        // paths remain available while inherited broker settings stay isolated.
+        #[cfg(windows)]
+        for key in ["SystemRoot", "WINDIR", "TEMP", "TMP"] {
+            if let Some(value) = std::env::var_os(key) {
+                command.env(key, value);
+            }
+        }
+        let child = command
             .env("FIBRIL_DATA_DIR", data_dir)
             .env("FIBRIL_BROKER_BIND", broker_addr.to_string())
             .env("FIBRIL_ADMIN_BIND", admin_addr.to_string())
